@@ -298,7 +298,9 @@ async function initOCR() {
   // below the number entering the frame.
   const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_BLOCK) ? Tesseract.PSM.SINGLE_BLOCK : '6';
   await worker.setParameters({
-    tessedit_char_whitelist: '0123456789',
+    // Include E/F (Gallagher prefix/suffix) and date separators so extractId can
+    // positively identify and reject those patterns before searching for the student number.
+    tessedit_char_whitelist: '0123456789EFef-/.',
     tessedit_pageseg_mode: psm,
     user_defined_dpi: '300',
   });
@@ -376,11 +378,22 @@ function grabReticle() {
 function extractId(text, nDigits, prefix) {
   const ok = (r) => r.length === nDigits && (!prefix || r.startsWith(prefix));
   const rev = (r) => r.split('').reverse().join('');
-  const runs = text.match(/\d+/g) || [];
-  for (const r of runs) if (ok(r)) return r;         // clean forward run
+
+  // Strip known non-student-ID patterns before searching for digit runs.
+  // The whitelist now includes E/F and date separators so we have the context
+  // needed to identify and reject these sequences.
+  let t = text;
+  // Gallagher card number: letter(s) flanking a digit sequence, e.g. E460487F
+  t = t.replace(/[EFef]\d+[EFef]*/g, ' ');
+  t = t.replace(/\d+[EFef]+/g, ' ');
+  // Date patterns: DD-MM-YYYY, DD/MM/YYYY, DD.MM.YYYY
+  t = t.replace(/\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/g, ' ');
+
+  const runs = t.match(/\d+/g) || [];
+  for (const r of runs) if (ok(r)) return r;
   const joined = runs.join('');
-  if (ok(joined)) return joined;                      // digits split by spaces (forward)
-  // Reverse fallback — catches card held 180° flipped or camera-mirrored reads
+  if (ok(joined)) return joined;
+  // Reverse fallback — catches card held 180° flipped
   for (const r of runs) { const rv = rev(r); if (ok(rv)) return rv; }
   const rj = rev(joined);
   if (ok(rj)) return rj;
