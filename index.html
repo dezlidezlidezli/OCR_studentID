@@ -97,7 +97,14 @@
     position:absolute;left:0;right:0;
     /* below reticle: 47% centre + half card height (portrait: ~54vw, max 214px) + gap */
     top:calc(47% + min(54vw,214px) + 14px);
-    text-align:center;font-size:12px;color:var(--muted);letter-spacing:.08em;pointer-events:none;
+    text-align:center;font-size:12px;color:var(--muted);letter-spacing:.08em;
+    cursor:pointer;
+  }
+  #dbgCanvas{
+    position:absolute;bottom:10px;left:10px;
+    max-width:140px;border:1px solid rgba(255,122,26,.55);
+    border-radius:5px;background:#000;opacity:.9;
+    display:none;pointer-events:none;
   }
   .cam-tools{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:8px;z-index:4}
   .cam-tools button,.zoom-wrap{
@@ -221,6 +228,7 @@
 
     <div class="reticle" id="reticle"><i></i><i></i><i></i><i></i></div>
     <div class="hint" id="hint">Align the student card in the frame</div>
+    <canvas id="dbgCanvas" title="OCR input preview — tap hint to toggle"></canvas>
 
     <div class="cam-tools">
       <button id="torchBtn" style="display:none" aria-label="Torch">&#9889;</button>

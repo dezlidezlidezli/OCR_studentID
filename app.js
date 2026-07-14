@@ -387,12 +387,19 @@ function extractId(text, nDigits, prefix) {
 
 /* ────────────────────────── scan loop ───────────────────────── */
 
+let dbgVisible = false;
+
 async function scanTick() {
   if (!state.scanning || state.busy || !state.workerReady) return;
   state.busy = true;
   try {
     const frame = grabReticle();
     if (frame) {
+      if (dbgVisible) {
+        const dbg = $('#dbgCanvas');
+        dbg.width = frame.width; dbg.height = frame.height;
+        dbg.getContext('2d').drawImage(frame, 0, 0);
+      }
       const { data } = await state.worker.recognize(frame);
       const id = extractId(data.text || '', state.settings.digits, state.settings.prefix);
       handleRead(id);
@@ -519,6 +526,12 @@ function wireUI() {
     setReadout(v, '', '');
     state.lastAccepted = { id: v, t: Date.now() };
     sendScan(v, 'manual');
+  });
+
+  $('#hint').addEventListener('click', () => {
+    dbgVisible = !dbgVisible;
+    $('#dbgCanvas').style.display = dbgVisible ? 'block' : 'none';
+    if (!dbgVisible) { const d = $('#dbgCanvas'); d.width = 0; }
   });
 
   $('#histBtn').addEventListener('click', () => $('#hist').classList.toggle('open'));
