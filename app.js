@@ -304,6 +304,40 @@ document.addEventListener('visibilitychange', () => {
 
 /* ────────────────────────── OCR ─────────────────────────────── */
 
+function greyscaleStretch(canvas) {
+  const ctx = canvas.getContext('2d', {willReadFrequently: true});
+  const W = canvas.width, H = canvas.height, n = W * H;
+  const img = ctx.getImageData(0, 0, W, H);
+  const d = img.data;
+  const lum = new Uint8Array(n), histo = new Uint32Array(256);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const v = (d[p] * 0.299 + d[p+1] * 0.587 + d[p+2] * 0.114) | 0;
+    lum[i] = v; histo[v]++;
+  }
+  let lo = 0, hi = 255, acc = 0;
+  const loCut = n * 0.05, hiCut = n * 0.95;
+  for (let v = 0; v < 256; v++) { acc += histo[v]; if (acc >= loCut) { lo = v; break; } }
+  acc = 0;
+  for (let v = 0; v < 256; v++) { acc += histo[v]; if (acc >= hiCut) { hi = v; break; } }
+  const range = Math.max(1, hi - lo);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    let v = ((lum[i] - lo) * 255 / range) | 0;
+    if (v < 0) v = 0; else if (v > 255) v = 255;
+    d[p] = d[p+1] = d[p+2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+function initBarcodeDetector() {
+  if (!('BarcodeDetector' in window)) return;
+  BarcodeDetector.getSupportedFormats().then(fmts => {
+    const want = ['pdf417', 'code_128', 'code_39', 'code_93'];
+    const use = want.filter(f => fmts.includes(f));
+    window._bd = new BarcodeDetector({formats: use.length ? use : fmts});
+  }).catch(() => {});
+}
+
 async function initOCR() {
   if (state.workerReady) return;
   if (typeof Tesseract === 'undefined') throw new Error('OCR engine failed to load — check your connection and reload.');
@@ -347,27 +381,7 @@ function grabReticle() {
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(video, sx, sy, sw, sh, 0, 0, targetW, targetH);
-
-  // grayscale + contrast stretch (5th–95th percentile)
-  const img = ctx.getImageData(0, 0, targetW, targetH);
-  const d = img.data, n = targetW * targetH;
-  const lum = new Uint8Array(n), histo = new Uint32Array(256);
-  for (let i = 0, p = 0; i < n; i++, p += 4) {
-    const v = (d[p] * 0.299 + d[p + 1] * 0.587 + d[p + 2] * 0.114) | 0;
-    lum[i] = v; histo[v]++;
-  }
-  let lo = 0, hi = 255, acc = 0;
-  const loCut = n * 0.05, hiCut = n * 0.95;
-  for (let v = 0; v < 256; v++) { acc += histo[v]; if (acc >= loCut) { lo = v; break; } }
-  acc = 0;
-  for (let v = 0; v < 256; v++) { acc += histo[v]; if (acc >= hiCut) { hi = v; break; } }
-  const range = Math.max(1, hi - lo);
-  for (let i = 0, p = 0; i < n; i++, p += 4) {
-    let v = ((lum[i] - lo) * 255 / range) | 0;
-    if (v < 0) v = 0; else if (v > 255) v = 255;
-    d[p] = d[p + 1] = d[p + 2] = v;
-  }
-  ctx.putImageData(img, 0, 0);
+  greyscaleStretch(c);
 
   // Rotate when the DISPLAY area is portrait — the video stream dimensions are unreliable
   // on iOS (sensor reports landscape 1920×1080 even when phone is held portrait).
@@ -399,6 +413,63 @@ function grabReticle() {
   return zone;
 }
 
+// Physical layout of the ANU ID-1 card (85.6 × 54 mm, landscape orientation).
+// Coordinates measured from the debug-canvas analysis; tune if ppm drifts.
+const KS = {
+  BC_W_MM:   28,   // physical barcode width — sets the pixels-per-mm scale
+  OFF_X_MM:  18,   // barcode-centre → student-number-centre, card +x (rightward)
+  OFF_Y_MM:  27,   // barcode-centre → student-number-centre, card +y (downward)
+  PATCH_W_MM: 42,  // extraction patch width  (generous, OCR + extractId filter noise)
+  PATCH_H_MM: 16,  // extraction patch height
+  OUT_H:     200,  // output canvas height in px
+};
+
+async function keystoneGrab() {
+  const video = $('#video');
+  if (!window._bd || !video.videoWidth) return null;
+  let codes;
+  try { codes = await window._bd.detect(video); }
+  catch(e) { return null; }
+  if (!codes || !codes.length) return null;
+
+  // Pick the largest barcode (area) to avoid spurious tiny codes
+  const bc = codes.reduce((a, b) => {
+    const area = c => { const p = c.cornerPoints;
+      return Math.abs((p[1].x-p[0].x)*(p[3].y-p[0].y) - (p[3].x-p[0].x)*(p[1].y-p[0].y)); };
+    return area(a) >= area(b) ? a : b;
+  });
+
+  // cornerPoints: top-left, top-right, bottom-right, bottom-left
+  // in intrinsic video pixel coords (0..videoWidth × 0..videoHeight)
+  const pts = bc.cornerPoints;
+  const bcx = (pts[0].x+pts[1].x+pts[2].x+pts[3].x) / 4;
+  const bcy = (pts[0].y+pts[1].y+pts[2].y+pts[3].y) / 4;
+
+  // Card angle = direction of barcode's top edge (pts[0]→pts[1])
+  const angle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
+
+  // Pixels per mm from barcode physical width
+  const ppm = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y) / KS.BC_W_MM;
+
+  // Rotate the card-local offset vector into image space
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  const snx = bcx + (KS.OFF_X_MM * cos - KS.OFF_Y_MM * sin) * ppm;
+  const sny = bcy + (KS.OFF_X_MM * sin + KS.OFF_Y_MM * cos) * ppm;
+
+  // Extract a deskewed patch centred on the student-number location
+  const outH = KS.OUT_H;
+  const outW = Math.round(KS.PATCH_W_MM / KS.PATCH_H_MM * outH);
+  const out  = document.createElement('canvas');
+  out.width  = outW; out.height = outH;
+  const ctx  = out.getContext('2d');
+  const sf   = outH / (KS.PATCH_H_MM * ppm);
+  ctx.translate(outW/2, outH/2);
+  ctx.rotate(-angle);
+  ctx.scale(sf, sf);
+  ctx.drawImage(video, -snx, -sny);
+  return greyscaleStretch(out);
+}
+
 function extractId(text, nDigits, prefix) {
   const ok = (r) => r.length === nDigits && (!prefix || r.startsWith(prefix));
   const rev = (r) => r.split('').reverse().join('');
@@ -419,7 +490,7 @@ async function scanTick() {
   if (!state.scanning || state.busy || !state.workerReady) return;
   state.busy = true;
   try {
-    const frame = grabReticle();
+    const frame = await keystoneGrab() || grabReticle();
     if (frame) {
       if (dbgVisible) {
         const dbg = $('#dbgCanvas');
@@ -508,6 +579,7 @@ async function onStart() {
     await startCamera();
     $('#gate').style.display = 'none';
     connectBridge();          // don't block scanning on the relay
+    initBarcodeDetector();
     await initOCR();
     startScanning();
   } catch (e) {
