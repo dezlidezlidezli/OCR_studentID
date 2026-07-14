@@ -356,10 +356,10 @@ function grabReticle() {
   }
   ctx.putImageData(img, 0, 0);
 
-  // Only rotate when the video stream is portrait (iPhone back camera in portrait mode).
-  // Mac/webcam delivers landscape frames where card text already reads horizontally —
-  // applying the rotation there would make the text vertical and break OCR.
-  if (video.videoHeight <= video.videoWidth) return c;
+  // Rotate when the DISPLAY area is portrait — the video stream dimensions are unreliable
+  // on iOS (sensor reports landscape 1920×1080 even when phone is held portrait).
+  // stage = video.getBoundingClientRect(), computed above; its aspect ratio matches the screen.
+  if (stage.height <= stage.width) return c;
 
   const rot = document.createElement('canvas');
   rot.width  = c.height;
@@ -403,7 +403,11 @@ async function scanTick() {
 
 function handleRead(id) {
   if (!id) { state.lastRead = null; return; }
-  if (id !== state.lastRead) { state.lastRead = id; return; }     // need two matching reads
+  if (id !== state.lastRead) {
+    state.lastRead = id;
+    setReadout(id, 'confirming…', 'warn');   // show first-frame candidate in orange
+    return;
+  }
   state.lastRead = null;
 
   const now = Date.now();
@@ -420,6 +424,9 @@ function startScanning() {
   state.scanning = true;
   $('#pauseBtn').style.display = 'block';
   if (!loopTimer) loopTimer = setInterval(scanTick, 350);
+  // Show video stream dimensions — useful for diagnosing iOS rotation issues
+  const v = $('#video');
+  setReadout('', `ready (${v.videoWidth}×${v.videoHeight})`, '');
 }
 function stopScanning() {
   state.scanning = false;
