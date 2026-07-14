@@ -226,7 +226,7 @@ function beep() {
     osc.connect(g); g.connect(state.audio.destination);
     osc.start(t0); osc.stop(t0 + 0.17);
   } catch (e) {}
-  if (navigator.vibrate) navigator.vibrate(60);
+  if (navigator.vibrate) navigator.vibrate([80, 60, 80]); // double-pulse on Android
 }
 
 function flashReticle() {
@@ -425,11 +425,7 @@ async function scanTick() {
 
 function handleRead(id) {
   if (!id) { state.lastRead = null; return; }
-  if (id !== state.lastRead) {
-    state.lastRead = id;
-    setReadout(id, 'confirming…', 'warn');   // show first-frame candidate in orange
-    return;
-  }
+  if (id !== state.lastRead) { state.lastRead = id; return; }
   state.lastRead = null;
 
   const now = Date.now();
