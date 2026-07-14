@@ -327,7 +327,7 @@ function grabReticle() {
   sw = Math.min(sw, vw - sx); sh = Math.min(sh, vh - sy);
   if (sw < 8 || sh < 8) return null;
 
-  const targetH = 128;   // best accuracy in testing; 160 over-sizes glyphs and misreads
+  const targetH = 220;   // card-size capture needs more height to keep glyphs legible
   const targetW = Math.round(sw * (targetH / sh));
   const c = document.createElement('canvas');
   c.width = targetW; c.height = targetH;
@@ -413,7 +413,7 @@ function stopScanning() {
 
 function refreshChrome() {
   $('#roomTxt').textContent = state.settings.room;
-  $('#hint').textContent = 'Point the frame at the ' + state.settings.digits + '-digit number';
+  $('#hint').textContent = 'Align the student card in the frame';
 }
 
 async function onStart() {

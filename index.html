@@ -67,12 +67,23 @@
   video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 
   .reticle{
-    position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);
-    width:min(86vw,560px);aspect-ratio:5/1;
-    box-shadow:0 0 0 200vmax rgba(8,10,12,.55); /* darken outside frame */
+    position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);
+    width:min(84vw,420px);aspect-ratio:85.6/54;  /* ISO/IEC 7810 ID-1 — standard credit card */
+    box-shadow:0 0 0 200vmax rgba(8,10,12,.52);
     border-radius:10px;pointer-events:none;
   }
-  .reticle i{position:absolute;width:26px;height:26px;border:3px solid var(--hivis)}
+  /* outer concentric guide ring */
+  .reticle::before{
+    content:'';position:absolute;inset:-11px;
+    border:1px dashed rgba(255,122,26,.28);border-radius:16px;pointer-events:none;
+  }
+  /* inner hint — lower-left corner, where the ANU student number lives */
+  .reticle::after{
+    content:'';position:absolute;
+    left:4%;bottom:9%;width:36%;height:30%;
+    border:1.5px dashed rgba(255,122,26,.45);border-radius:5px;pointer-events:none;
+  }
+  .reticle i{position:absolute;width:26px;height:26px;border:2.5px solid var(--hivis)}
   .reticle i:nth-child(1){left:-2px;top:-2px;border-right:0;border-bottom:0;border-radius:10px 0 0 0}
   .reticle i:nth-child(2){right:-2px;top:-2px;border-left:0;border-bottom:0;border-radius:0 10px 0 0}
   .reticle i:nth-child(3){left:-2px;bottom:-2px;border-right:0;border-top:0;border-radius:0 0 0 10px}
@@ -83,7 +94,9 @@
     @keyframes pulse{0%{transform:translate(-50%,-50%) scale(1)}35%{transform:translate(-50%,-50%) scale(1.04)}100%{transform:translate(-50%,-50%) scale(1)}}
   }
   .hint{
-    position:absolute;left:0;right:0;top:calc(38% + min(43vw,280px)*.2 + 22px);
+    position:absolute;left:0;right:0;
+    /* below reticle: 40% centre + half card height (≈26.5vw, max 133px) + gap */
+    top:calc(40% + min(26.5vw,133px) + 16px);
     text-align:center;font-size:12px;color:var(--muted);letter-spacing:.08em;pointer-events:none;
   }
   .cam-tools{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:8px;z-index:4}
@@ -207,7 +220,7 @@
     <video id="video" playsinline muted autoplay></video>
 
     <div class="reticle" id="reticle"><i></i><i></i><i></i><i></i></div>
-    <div class="hint" id="hint">Point the frame at the ID number</div>
+    <div class="hint" id="hint">Align the student card in the frame</div>
 
     <div class="cam-tools">
       <button id="torchBtn" style="display:none" aria-label="Torch">&#9889;</button>
