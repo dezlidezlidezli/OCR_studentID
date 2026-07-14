@@ -3,7 +3,7 @@
    CDN-hosted OCR/relay libraries (tesseract core + traineddata are several MB;
    after the first online load the app starts instantly). */
 
-const VERSION = 'wedge-v14-13';
+const VERSION = 'wedge-v14-14';
 const CORE = [
   './',
   './index.html',
