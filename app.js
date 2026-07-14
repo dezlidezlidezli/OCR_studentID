@@ -312,9 +312,7 @@ async function initOCR() {
   // PSM 6 (uniform block) tested markedly more tolerant of loose framing than
   // PSM 7 (single line) against a real card photo — survives the label line
   // below the number entering the frame.
-  // PSM 7 (single text line) — appropriate now that we feed Tesseract only the
-  // cropped + upscaled student-number strip, not the full card.
-  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_LINE) ? Tesseract.PSM.SINGLE_LINE : '7';
+  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_BLOCK) ? Tesseract.PSM.SINGLE_BLOCK : '6';
   await worker.setParameters({
     tessedit_char_whitelist: '0123456789EFef-/.',
     tessedit_pageseg_mode: psm,
@@ -345,7 +343,7 @@ function grabReticle() {
   sw = Math.min(sw, vw - sx); sh = Math.min(sh, vh - sy);
   if (sw < 8 || sh < 8) return null;
 
-  const targetH = 480;   // higher resolution for the crop path
+  const targetH = 340;   // full portrait card — 7-digit filter handles false-read rejection
   const targetW = Math.round(sw * (targetH / sh));
   const c = document.createElement('canvas');
   c.width = targetW; c.height = targetH;
@@ -388,22 +386,7 @@ function grabReticle() {
   rctx.translate(0, rot.height);
   rctx.rotate(-Math.PI / 2);
   rctx.drawImage(c, 0, 0);
-
-  // Crop to the student-number zone and upscale it for Tesseract.
-  // After 90° CCW rotation the student number (lower-left of portrait frame)
-  // maps to the right 40% / bottom 30% of the rotated landscape canvas.
-  const zx = Math.floor(rot.width  * 0.60);
-  const zy = Math.floor(rot.height * 0.70);
-  const zw = rot.width  - zx;
-  const zh = rot.height - zy;
-
-  const zoneH  = 280;
-  const zoneW  = Math.round(zw * (zoneH / zh));
-  const zone   = document.createElement('canvas');
-  zone.width   = zoneW;
-  zone.height  = zoneH;
-  zone.getContext('2d').drawImage(rot, zx, zy, zw, zh, 0, 0, zoneW, zoneH);
-  return zone;
+  return rot;
 }
 
 function extractId(text, nDigits, prefix) {
