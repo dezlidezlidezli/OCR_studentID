@@ -309,7 +309,7 @@ async function initOCR() {
   if (typeof Tesseract === 'undefined') throw new Error('OCR engine failed to load — check your connection and reload.');
   setReadout('', 'loading OCR engine…', '');
   const worker = await Tesseract.createWorker('eng');
-  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_BLOCK) ? Tesseract.PSM.SINGLE_BLOCK : '6';
+  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_LINE) ? Tesseract.PSM.SINGLE_LINE : '7';
   await worker.setParameters({
     tessedit_char_whitelist: '0123456789',
     tessedit_pageseg_mode: psm,
@@ -390,7 +390,7 @@ function grabReticle() {
   const zy = Math.floor(rot.height * 0.58);
   const zw = rot.width  - zx;
   const zh = rot.height - zy;
-  const zoneH = 280;
+  const zoneH = 200;
   const zoneW = Math.round(zw * (zoneH / zh));
   const zone  = document.createElement('canvas');
   zone.width  = zoneW;
