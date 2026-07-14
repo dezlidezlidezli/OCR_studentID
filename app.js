@@ -361,7 +361,16 @@ function grabReticle() {
     d[p] = d[p + 1] = d[p + 2] = v;
   }
   ctx.putImageData(img, 0, 0);
-  return c;
+
+  // Card held portrait → digits run bottom-to-top; rotate 90° CW so text is horizontal for Tesseract
+  const rot = document.createElement('canvas');
+  rot.width  = c.height;   // tall axis becomes the width
+  rot.height = c.width;
+  const rctx = rot.getContext('2d');
+  rctx.translate(rot.width, 0);
+  rctx.rotate(Math.PI / 2);
+  rctx.drawImage(c, 0, 0);
+  return rot;
 }
 
 function extractId(text, nDigits, prefix) {
