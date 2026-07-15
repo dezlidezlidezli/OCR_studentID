@@ -160,6 +160,7 @@
   .readout .state{font-size:12px;color:var(--muted);font-family:var(--mono);white-space:nowrap}
   .readout .state.ok{color:var(--tick)}
   .readout .state.warn{color:var(--warn)}
+  .readout .state.bad{color:var(--bad)}
 
   .deck-row{display:flex;gap:10px;margin-top:10px;align-items:center}
   .deck-row .flat{
@@ -193,6 +194,7 @@
   .hist li .t{color:var(--muted);font-size:11px}
   .hist li .s{margin-left:auto;font-size:11px;color:var(--muted)}
   .hist li .s.ok{color:var(--tick)}
+  .hist li .s.warn{color:var(--warn)} .hist li .s.bad{color:var(--bad)}
   .hist li:active{background:var(--ink)}
 
   /* ── settings sheet ──────────────────────── */
@@ -327,7 +329,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v2025-07-14.37</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v2025-07-14.38</p>
 </div>
 
 <div class="toast" id="toast"></div>

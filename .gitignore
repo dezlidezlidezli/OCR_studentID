@@ -19,3 +19,7 @@ receiver/icon_smallcheck.png
 # Runtime logs
 scans.csv
 receiver/scans.csv
+
+# Google OAuth secrets — never commit
+receiver/credentials.json
+receiver/token.json

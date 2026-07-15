@@ -12,7 +12,8 @@ echo ""
 
 # ── 1. Install build deps ─────────────────────────────────────────────────────
 echo "→ Installing dependencies…"
-pip install --quiet paho-mqtt cryptography pynput pyinstaller pillow
+pip install --quiet paho-mqtt cryptography pynput pyinstaller pillow \
+    google-api-python-client google-auth-oauthlib google-auth-httplib2
 
 # ── 2. App icon ───────────────────────────────────────────────────────────────
 echo "→ Generating app icon…"

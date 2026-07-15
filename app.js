@@ -118,7 +118,23 @@ async function connectBridge() {
     if (topic !== topicBase() + '/ack') return;
     try {
       const msg = await decryptJSON(new TextDecoder().decode(payload));
-      if (msg.t === 'ack' && msg.dev === state.deviceId) markHistory(msg.seq, 'typed', 'ok');
+      if (msg.dev !== state.deviceId) return;
+      if (msg.t === 'ack') {
+        markHistory(msg.seq, 'typed', 'ok');
+      } else if (msg.t === 'checkin') {
+        // Receiver flipped (or couldn't flip) the student's tick on the Google Sheet.
+        const map = {
+          'checked-in':     ['checked in ✓',   'ok'],
+          'already':        ['already in',     'warn'],
+          'not-registered': ['not registered', 'bad'],
+          'error':          ['sheet error',    'bad'],
+        };
+        const [txt, cls] = map[msg.status] || [msg.status, ''];
+        const label = txt + (msg.name ? '  ·  ' + msg.name : '');
+        const h = state.history.find(x => x.seq === msg.seq);
+        markHistory(msg.seq, label, cls);
+        if (h && state.lastAccepted.id === h.id) setReadout(h.id, label, cls);
+      }
     } catch (e) { /* wrong room / stray traffic */ }
   });
 }
