@@ -224,15 +224,19 @@ function beep() {
     const ctx = state.audio;
     const t0 = ctx.currentTime;
 
-    // Audible confirmation tone
-    const osc = ctx.createOscillator(), g = ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(880, t0);
-    osc.frequency.setValueAtTime(1320, t0 + 0.07);
-    g.gain.setValueAtTime(0.12, t0);
-    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
-    osc.connect(g); g.connect(ctx.destination);
-    osc.start(t0); osc.stop(t0 + 0.17);
+    // Success chime: two quick ascending notes (G5 → D6) with a soft attack — reads
+    // clearly as "got it", played alongside the green flash.
+    for (const [freq, dt] of [[784, 0], [1175, 0.085]]) {
+      const osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+      const s = t0 + dt;
+      g.gain.setValueAtTime(0.0001, s);
+      g.gain.exponentialRampToValueAtTime(0.2, s + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, s + 0.19);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(s); osc.stop(s + 0.2);
+    }
 
     // Physical thump via speaker — iOS Taptic Engine is inaccessible from web,
     // but a 40 Hz burst makes the speaker cone move enough to feel through the hand.
@@ -259,7 +263,7 @@ async function startCamera() {
   const video = $('#video');
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
   });
   state.stream = stream;
   state.track = stream.getVideoTracks()[0];
@@ -278,6 +282,13 @@ function stopCamera() {
 
 function setupCamTools() {
   const caps = state.track && state.track.getCapabilities ? state.track.getCapabilities() : {};
+
+  // Keep the card sharp while it (and the phone) move — continuous autofocus reduces the
+  // out-of-focus frames the sharpness gate would otherwise skip.
+  if (caps.focusMode && caps.focusMode.includes('continuous')) {
+    state.track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+  }
+
   const torchBtn = $('#torchBtn');
   if (caps.torch) {
     torchBtn.style.display = 'block';
@@ -407,6 +418,7 @@ const RT_FAIL_RESET = 8;
 function resetRtState() {
   _rtLocked = null; _rtFailCount = 0; _rtSearchPos = 0;
   _candR = null; _candId = null; _lockLastId = null;
+  _focusPeak = 0; _blurSkips = 0;   // fresh sharpness baseline for the new session
   state.suppressId = null;   // fresh search — the card left / a new session began
   // Bias the search toward whichever orientation last CONFIRMED so repeat sessions
   // find the right rotation on the first probe instead of cycling all four again.
@@ -530,6 +542,39 @@ async function ocrFrame(frame, modeLabel) {
   return id;
 }
 
+// ── sharpness gate ──────────────────────────────────────────────
+// Handheld scanning produces lots of motion-blurred frames. OCR-ing a blurry frame
+// wastes ~300–500ms AND tends to misread (which breaks the two-in-a-row confirm),
+// so both add up to a slow, flaky scan. We score each grabbed frame's high-frequency
+// content (sharp = high, blurred = low) and skip OCR on the blurry ones — but never
+// starve: after MAX_BLUR_SKIP skips we OCR anyway, and the peak decays so it re-adapts
+// to lighting. Net effect: OCR fires on the sharp moments between shakes → faster,
+// cleaner reads. Skipping is cheap (no OCR), and the loop reschedules immediately.
+let _focusPeak = 0;
+let _blurSkips = 0;
+const SHARP_FRAC = 0.6;      // OCR only frames within this fraction of the recent peak
+const MAX_BLUR_SKIP = 4;     // …but force a read after this many consecutive skips
+
+function focusScore(canvas) {
+  const w = canvas.width, h = canvas.height;
+  if (!w || !h) return 0;
+  // Sample the central band (where the card/number usually sits) at a stride for speed.
+  const x0 = Math.floor(w * 0.15), y0 = Math.floor(h * 0.20);
+  const sw = Math.max(1, Math.floor(w * 0.70)), sh = Math.max(1, Math.floor(h * 0.60));
+  const d = canvas.getContext('2d', { willReadFrequently: true }).getImageData(x0, y0, sw, sh).data;
+  const step = 2;
+  let sum = 0, n = 0;
+  for (let y = 0; y < sh; y += step) {
+    const row = y * sw * 4;
+    for (let x = 0; x < sw - step; x += step) {
+      const i = row + x * 4;
+      const dv = d[i] - d[i + step * 4];   // horizontal gradient (grayscale → use R)
+      sum += dv * dv; n++;
+    }
+  }
+  return n ? sum / n : 0;
+}
+
 async function scanTick() {
   if (!state.scanning || state.busy || !state.workerReady) return;
   state.busy = true;
@@ -546,6 +591,17 @@ async function scanTick() {
 
     const frame = grabFrame(r);
     if (!frame) return;
+
+    // Skip motion-blurred frames (cheap) so OCR only spends time on sharp ones.
+    const fs = focusScore(frame);
+    _focusPeak = Math.max(fs, _focusPeak * 0.92);
+    if (fs < _focusPeak * SHARP_FRAC && _blurSkips < MAX_BLUR_SKIP) {
+      _blurSkips++;
+      if (dbgVisible) drawDbgCanvas(frame, tag + ' ~blur');
+      return;
+    }
+    _blurSkips = 0;
+
     if (dbgVisible) drawDbgCanvas(frame, tag);
     const id = await ocrFrame(frame, tag);
 
@@ -582,25 +638,26 @@ async function scanTick() {
   finally { state.busy = false; }
 }
 
+const DUP_WINDOW_MS = 1000;   // only de-dupe the SAME number re-read within this window
 // Called only with an id that has already been confirmed (same value read twice in a
-// row at one rotation). Handles duplicate-blocking, feedback and relay.
+// row at one rotation). No history-wide de-dupe: the same card may be scanned again
+// whenever you like. We only suppress RAPID duplicates — the same number re-read within
+// DUP_WINDOW_MS (the scan loop re-reading a card sitting in the frame) — so a lingering
+// card is typed once, but re-presenting it (or any >1s gap) sends it again.
 function handleAccept(id) {
-  // A scan the user explicitly deleted stays ignored until the card leaves the frame
-  // (otherwise the same card still in view would be re-sent on the very next tick).
+  const now = Date.now();
+  // A scan the user explicitly deleted stays ignored until a different card is read.
   if (state.suppressId === id) return;
   state.suppressId = null;
 
-  // Block re-scan of any ID already in history — offer Re-scan / Delete instead.
-  if (state.history.some(h => h.id === id)) {
-    const btn = $('#rescanBtn');  btn.dataset.rid = id;  btn.style.display = 'block';
-    const del = $('#deleteBtn');  del.dataset.rid = id;  del.style.display = 'block';
+  if (state.lastAccepted.id === id && (now - state.lastAccepted.t) < DUP_WINDOW_MS) {
+    state.lastAccepted.t = now;   // sliding window: stay quiet while the same card lingers
     return;
   }
-  state.lastAccepted = { id, t: Date.now() };
+  state.lastAccepted = { id, t: now };
 
   flashGreen(); beep(); flashReticle();
-  $('#rescanBtn').style.display = 'none';
-  $('#deleteBtn').style.display = 'none';
+  const del = $('#deleteBtn'); del.dataset.rid = id; del.style.display = 'block';
   setReadout(id, '', '');
   sendScan(id, 'ocr');
 }
@@ -631,6 +688,7 @@ function stopScanning() {
   state.scanning = false;
   if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; }
   $('#pauseBtn').style.display = 'none';
+  $('#deleteBtn').style.display = 'none';
 }
 
 /* ────────────────────────── UI wiring ───────────────────────── */
@@ -730,34 +788,17 @@ function wireUI() {
     if (!dbgVisible) { const d = $('#dbgCanvas'); d.width = 0; $('#dbgText').textContent = ''; _frameLog.length = 0; }
   });
 
-  $('#rescanBtn').addEventListener('click', () => {
-    const id = $('#rescanBtn').dataset.rid;
-    if (!id) return;
-    // Forget this scan, then re-run the scan logic from scratch: drop it from history,
-    // clear the accepted state, and reset orientation search so the loop actually
-    // re-reads the card and sends a fresh result — rather than re-transmitting the
-    // previously cached value.
-    state.history = state.history.filter(h => h.id !== id);
-    persistHistory(); renderHistory();
-    state.lastAccepted = { id: null, t: 0 };
-    $('#rescanBtn').style.display = 'none';
-    $('#deleteBtn').style.display = 'none';
-    resetRtState();                       // also clears suppressId → card is re-read cleanly
-    setReadout('', 'scanning…', '');
-  });
-
   $('#deleteBtn').addEventListener('click', () => {
     const id = $('#deleteBtn').dataset.rid;
     if (!id) return;
-    // Delete the scan from the log without re-sending, and suppress this id so the same
-    // card still in view isn't instantly re-scanned. Cleared once the card leaves.
+    // Remove the just-sent scan from the log without re-sending, and suppress this id so
+    // the same card still in view isn't re-typed. Cleared once a different card is read.
     state.history = state.history.filter(h => h.id !== id);
     persistHistory(); renderHistory();
     state.suppressId = id;
     state.lastAccepted = { id: null, t: 0 };
-    $('#rescanBtn').style.display = 'none';
     $('#deleteBtn').style.display = 'none';
-    setReadout('', 'deleted — scanning…', '');
+    setReadout('', 'deleted', 'warn');
     toast('Deleted ' + id);
   });
 
