@@ -9,7 +9,8 @@ const $ = (s) => document.querySelector(s);
 const DEFAULTS = {
   room: '',
   digits: 7,
-  prefix: '',                                      // optional leading digits, e.g. '8'
+  prefix: '',                                      // optional exact leading digits, e.g. '8'
+  startDigits: '5678',                             // accepted first digits; blank = any
   mode: 'bridge',                                  // 'bridge' | 'clip'
   broker: 'wss://broker.emqx.io:8084/mqtt',
 };
@@ -379,35 +380,47 @@ function grabFrame(rotIdx) {
   return greyscaleStretch(out);
 }
 
-// RT rotation lock — persists across ticks so we stay fast once orientation is found.
-// The card can be presented in any of the four 90° orientations; we OCR one rotation
-// per tick (keeps each tick to a single OCR pass — low memory, no iOS tab crashes),
-// cycling until a rotation yields a valid read, then lock onto it for the session.
-let _rtLocked = null;   // null = searching; 0-3 = locked rotation index
+// Rotation search + lock.
+//
+// The card can be presented in any of the four 90° orientations. A single 7-digit
+// read is NOT trustworthy: a wrong/upside-down orientation still OCRs junk 7-digit
+// numbers out of the barcode, dates and other card fields — but those junk reads are
+// DIFFERENT every frame. The real student number is the same every frame. So we only
+// trust a rotation once it returns the *same* 7-digit value twice in a row at that same
+// rotation. That single rule rejects wrong orientations and confirms the right one.
+//
+// One OCR per tick keeps memory flat (no iOS tab crashes). Flow while searching:
+//   • probe the next rotation in the cycle
+//   • a valid read → hold it as a "candidate" and re-check that same rotation next tick
+//   • candidate reproduces → lock + accept;  candidate changes/null → discard, move on
+let _rtLocked = null;        // null = searching; 0-3 = locked rotation
 let _rtFailCount = 0;
 let _rtSearchOrder = [0, 1, 2, 3];
 let _rtSearchPos = 0;
+let _candR = null;           // rotation of a pending candidate awaiting confirmation
+let _candId = null;          // the candidate's 7-digit value
+let _lockLastId = null;      // previous read at the locked rotation (for 2-in-a-row)
 const RT_FAIL_RESET = 8;
 
 function resetRtState() {
   _rtLocked = null; _rtFailCount = 0; _rtSearchPos = 0;
-  // Bias the search toward whichever orientation last worked so repeat sessions
-  // lock on the very first tick instead of cycling all four again.
+  _candR = null; _candId = null; _lockLastId = null;
+  // Bias the search toward whichever orientation last CONFIRMED so repeat sessions
+  // find the right rotation on the first probe instead of cycling all four again.
   const last = Number(localStorage.getItem('wedge.rot'));
   _rtSearchOrder = (last >= 0 && last <= 3)
     ? [last, ...[0, 1, 2, 3].filter(r => r !== last)]
     : [0, 1, 2, 3];
 }
 
-function extractId(text, nDigits, prefix) {
-  const ok = (r) => r.length === nDigits && (!prefix || r.startsWith(prefix));
-  const rev = (r) => r.split('').reverse().join('');
+function extractId(text, nDigits, prefix, startSet) {
+  const ok = (r) => r.length === nDigits
+    && (!prefix || r.startsWith(prefix))
+    && (!startSet || startSet.indexOf(r[0]) >= 0);   // first digit must be allowed
   const runs = (text.match(/\d+/g) || []);
-  for (const r of runs) if (ok(r)) return r;
+  for (const r of runs) if (ok(r)) return r;         // a clean N-digit run
   const joined = runs.join('');
-  if (ok(joined)) return joined;
-  for (const r of runs) { const rv = rev(r); if (ok(rv)) return rv; }
-  if (ok(rev(joined))) return rev(joined);
+  if (ok(joined)) return joined;                     // number split by spaces/glyphs
   return null;
 }
 
@@ -415,20 +428,15 @@ function extractId(text, nDigits, prefix) {
 
 let dbgVisible = false;
 
-// Confirmation tally: a 7-digit value must be read CONFIRM_COUNT times before we
-// accept it. Reads accumulate per-value, so a stray different number or a null read
-// can never wipe out progress on the correct value — only two genuine reads of the
-// SAME value confirm it.
-const CONFIRM_COUNT = 2;
-const _tally = new Map();
-function resetConfirm() { _tally.clear(); }
-
 const _dbgLog = [];
 function dbgRecord(mode, rawText, candidate) {
   if (!dbgVisible) return;
-  const prospective = candidate ? (_tally.get(candidate) || 0) + 1 : 0;
-  const willConfirm = prospective >= CONFIRM_COUNT;
-  const entry = `[${mode}] "${rawText.replace(/\s+/g,' ').trim().slice(0,48)}" → ${candidate||'null'} ${willConfirm?'✓CONFIRM':candidate?'('+prospective+'×)':''}`;
+  // A read confirms if it matches the pending candidate (search) or the previous
+  // read at the locked rotation (fast path) — i.e. same value twice in a row.
+  const confirming = candidate &&
+    (candidate === _candId || (_rtLocked !== null && candidate === _lockLastId));
+  const status = confirming ? '✓CONFIRM' : candidate ? '(1st)' : '';
+  const entry = `[${mode}] "${rawText.replace(/\s+/g,' ').trim().slice(0,48)}" → ${candidate||'null'} ${status}`;
   _dbgLog.unshift(entry);
   if (_dbgLog.length > 8) _dbgLog.pop();
   const el = $('#dbgText');
@@ -513,7 +521,7 @@ function drawDbgCanvas(frame, modeLabel) {
 
 async function ocrFrame(frame, modeLabel) {
   const { data } = await state.worker.recognize(frame);
-  const id = extractId(data.text || '', state.settings.digits, state.settings.prefix);
+  const id = extractId(data.text || '', state.settings.digits, state.settings.prefix, state.settings.startDigits);
   captureFrame(modeLabel, frame, data.text || '', id);
   dbgRecord(modeLabel, data.text || '', id);
   return id;
@@ -525,42 +533,55 @@ async function scanTick() {
   try {
     // Full video frame — the reticle is cosmetic guidance only, never cropped to.
     // Exactly ONE OCR pass per tick keeps memory flat so iOS Safari won't kill the tab.
+
+    // Pick which rotation to read: locked → known-good; candidate → recheck it;
+    // otherwise probe the next rotation in the search cycle.
+    let r, tag;
+    if (_rtLocked !== null)   { r = _rtLocked; tag = `RT${r}`; }
+    else if (_candR !== null) { r = _candR;    tag = `RT${r}=`; }   // rechecking candidate
+    else                      { r = _rtSearchOrder[_rtSearchPos]; tag = `RT${r}?`; }
+
+    const frame = grabFrame(r);
+    if (!frame) return;
+    if (dbgVisible) drawDbgCanvas(frame, tag);
+    const id = await ocrFrame(frame, tag);
+
     if (_rtLocked !== null) {
-      // Locked: scan the known-good rotation every tick (fast path).
-      const frame = grabFrame(_rtLocked);
-      if (!frame) return;
-      if (dbgVisible) drawDbgCanvas(frame, `RT${_rtLocked}`);
-      const id = await ocrFrame(frame, `RT${_rtLocked}`);
+      // Fast path: accept only when two consecutive reads at the locked rotation agree,
+      // so a one-off misread can never be sent.
+      if (id && id === _lockLastId) handleAccept(id);
+      _lockLastId = id;
       if (!id) { if (++_rtFailCount >= RT_FAIL_RESET) resetRtState(); }
       else _rtFailCount = 0;
-      handleRead(id);
-    } else {
-      // Searching: try one rotation this tick; advance next tick if it misses.
-      const r = _rtSearchOrder[_rtSearchPos];
-      const frame = grabFrame(r);
-      if (frame) {
-        if (dbgVisible) drawDbgCanvas(frame, `RT${r}?`);
-        const id = await ocrFrame(frame, `RT${r}?`);
-        if (id) {
-          _rtLocked = r; _rtFailCount = 0;
-          localStorage.setItem('wedge.rot', String(r)); // remember for next session
-          handleRead(id);
-          return;
-        }
-      }
-      _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length;
+      return;
     }
+
+    if (_candR !== null) {
+      // This tick re-checked a pending candidate rotation.
+      if (id && id === _candId) {
+        // Same 7-digit value twice in a row at the same rotation → trust and lock.
+        _rtLocked = r; _lockLastId = id; _rtFailCount = 0;
+        localStorage.setItem('wedge.rot', String(r)); // remember the CONFIRMED rotation
+        _candR = null; _candId = null;
+        handleAccept(id);
+      } else {
+        // Candidate didn't reproduce — it was noise from a wrong orientation. Move on.
+        _candR = null; _candId = null;
+        _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length;
+      }
+      return;
+    }
+
+    // Fresh probe of a search rotation.
+    if (id) { _candR = r; _candId = id; }   // hold it; next tick confirms or discards
+    else    { _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length; }
   } catch(e) { /* transient error: skip frame */ }
   finally { state.busy = false; }
 }
 
-function handleRead(id) {
-  if (!id) return;                       // null read — ignore, tally is untouched
-  const n = (_tally.get(id) || 0) + 1;
-  _tally.set(id, n);
-  if (n < CONFIRM_COUNT) return;         // not yet seen enough times
-  resetConfirm();                        // confirmed — clear tallies for the next scan
-
+// Called only with an id that has already been confirmed (same value read twice in a
+// row at one rotation). Handles duplicate-blocking, feedback and relay.
+function handleAccept(id) {
   // Block re-scan of any ID already in history — show Re-scan button instead
   if (state.history.some(h => h.id === id)) {
     const btn = $('#rescanBtn');
@@ -579,8 +600,7 @@ function handleRead(id) {
 let loopTimer = null;
 function startScanning() {
   state.scanning = true;
-  resetRtState();  // re-detect card orientation for each new scan session
-  resetConfirm();  // fresh confirmation tally per session
+  resetRtState();  // re-detect card orientation + clear pending candidate each session
   $('#pauseBtn').style.display = 'block';
   if (!loopTimer) loopTimer = setInterval(scanTick, 350);
   // Show video stream dimensions — useful for diagnosing iOS rotation issues
@@ -635,6 +655,7 @@ function openSheet() {
   $('#setRoom').value = s.room;
   $('#setDigits').value = s.digits;
   $('#setPrefix').value = s.prefix || '';
+  $('#setStart').value = s.startDigits || '';
   $('#setMode').value = s.mode;
   $('#setBroker').value = s.broker;
   $('#sheetBack').classList.add('open');
@@ -649,6 +670,7 @@ function onSave() {
   s.room = ($('#setRoom').value.trim().toUpperCase() || randomRoom());
   s.digits = Math.max(4, Math.min(12, Number($('#setDigits').value) || DEFAULTS.digits));
   s.prefix = $('#setPrefix').value.replace(/\D/g, '').slice(0, Math.max(0, s.digits - 1));
+  s.startDigits = [...new Set($('#setStart').value.replace(/\D/g, ''))].join(''); // unique digits, blank = any
   s.mode = $('#setMode').value === 'clip' ? 'clip' : 'bridge';
   s.broker = $('#setBroker').value.trim() || DEFAULTS.broker;
   saveSettings(s);

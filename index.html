@@ -304,6 +304,10 @@
     <input id="setPrefix" inputmode="numeric" autocomplete="off" placeholder="e.g. 8">
   </div>
   <div class="field">
+    <label for="setStart">First digit is one of (rejects misreads — blank = any)</label>
+    <input id="setStart" inputmode="numeric" autocomplete="off" placeholder="e.g. 5678">
+  </div>
+  <div class="field">
     <label for="setMode">Output</label>
     <select id="setMode">
       <option value="bridge">Bridge — type on paired computer</option>
@@ -316,7 +320,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v2025-07-14.26</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v2025-07-14.27</p>
 </div>
 
 <div class="toast" id="toast"></div>
