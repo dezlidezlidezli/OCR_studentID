@@ -47,6 +47,8 @@ const state = {
   scanning: false,
   busy: false,
   lastAccepted: { id: null, t: 0 },
+  suppressId: null,   // an id the user just deleted — ignored until the card leaves the frame
+
   history: (() => { try { return JSON.parse(localStorage.getItem('wedge.hist') || '[]'); } catch (e) { return []; } })(),
   audio: null,
   wakeLock: null,
@@ -405,6 +407,7 @@ const RT_FAIL_RESET = 8;
 function resetRtState() {
   _rtLocked = null; _rtFailCount = 0; _rtSearchPos = 0;
   _candR = null; _candId = null; _lockLastId = null;
+  state.suppressId = null;   // fresh search — the card left / a new session began
   // Bias the search toward whichever orientation last CONFIRMED so repeat sessions
   // find the right rotation on the first probe instead of cycling all four again.
   const last = Number(localStorage.getItem('wedge.rot'));
@@ -582,34 +585,51 @@ async function scanTick() {
 // Called only with an id that has already been confirmed (same value read twice in a
 // row at one rotation). Handles duplicate-blocking, feedback and relay.
 function handleAccept(id) {
-  // Block re-scan of any ID already in history — show Re-scan button instead
+  // A scan the user explicitly deleted stays ignored until the card leaves the frame
+  // (otherwise the same card still in view would be re-sent on the very next tick).
+  if (state.suppressId === id) return;
+  state.suppressId = null;
+
+  // Block re-scan of any ID already in history — offer Re-scan / Delete instead.
   if (state.history.some(h => h.id === id)) {
-    const btn = $('#rescanBtn');
-    btn.dataset.rid = id;
-    btn.style.display = 'block';
+    const btn = $('#rescanBtn');  btn.dataset.rid = id;  btn.style.display = 'block';
+    const del = $('#deleteBtn');  del.dataset.rid = id;  del.style.display = 'block';
     return;
   }
   state.lastAccepted = { id, t: Date.now() };
 
   flashGreen(); beep(); flashReticle();
   $('#rescanBtn').style.display = 'none';
+  $('#deleteBtn').style.display = 'none';
   setReadout(id, '', '');
   sendScan(id, 'ocr');
 }
 
+// Self-rescheduling loop: the next OCR fires as soon as the previous one FINISHES,
+// instead of on a fixed 350ms grid. A fixed interval quantised every read up to the
+// next tick boundary (a ~400ms recognise() effectively cost ~700ms because the
+// mid-flight timer fired while busy and was skipped). Chaining removes that dead time.
 let loopTimer = null;
+const LOOP_GAP_MS = 30;   // brief yield so the UI/GC breathe between reads
+function scanLoop() {
+  loopTimer = null;
+  if (!state.scanning) return;
+  scanTick().finally(() => {
+    if (state.scanning) loopTimer = setTimeout(scanLoop, LOOP_GAP_MS);
+  });
+}
 function startScanning() {
   state.scanning = true;
   resetRtState();  // re-detect card orientation + clear pending candidate each session
   $('#pauseBtn').style.display = 'block';
-  if (!loopTimer) loopTimer = setInterval(scanTick, 350);
+  if (!loopTimer) scanLoop();
   // Show video stream dimensions — useful for diagnosing iOS rotation issues
   const v = $('#video');
   setReadout('', `ready (${v.videoWidth}×${v.videoHeight})`, '');
 }
 function stopScanning() {
   state.scanning = false;
-  if (loopTimer) { clearInterval(loopTimer); loopTimer = null; }
+  if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; }
   $('#pauseBtn').style.display = 'none';
 }
 
@@ -713,14 +733,32 @@ function wireUI() {
   $('#rescanBtn').addEventListener('click', () => {
     const id = $('#rescanBtn').dataset.rid;
     if (!id) return;
-    // Remove all history entries for this ID so it can be re-sent cleanly
+    // Forget this scan, then re-run the scan logic from scratch: drop it from history,
+    // clear the accepted state, and reset orientation search so the loop actually
+    // re-reads the card and sends a fresh result — rather than re-transmitting the
+    // previously cached value.
     state.history = state.history.filter(h => h.id !== id);
     persistHistory(); renderHistory();
-    state.lastAccepted = { id, t: Date.now() };
-    flashGreen(); beep(); flashReticle();
+    state.lastAccepted = { id: null, t: 0 };
     $('#rescanBtn').style.display = 'none';
-    setReadout(id, '', '');
-    sendScan(id, 'ocr');
+    $('#deleteBtn').style.display = 'none';
+    resetRtState();                       // also clears suppressId → card is re-read cleanly
+    setReadout('', 'scanning…', '');
+  });
+
+  $('#deleteBtn').addEventListener('click', () => {
+    const id = $('#deleteBtn').dataset.rid;
+    if (!id) return;
+    // Delete the scan from the log without re-sending, and suppress this id so the same
+    // card still in view isn't instantly re-scanned. Cleared once the card leaves.
+    state.history = state.history.filter(h => h.id !== id);
+    persistHistory(); renderHistory();
+    state.suppressId = id;
+    state.lastAccepted = { id: null, t: 0 };
+    $('#rescanBtn').style.display = 'none';
+    $('#deleteBtn').style.display = 'none';
+    setReadout('', 'deleted — scanning…', '');
+    toast('Deleted ' + id);
   });
 
   $('#saveFramesBtn').addEventListener('click', saveFrames);
