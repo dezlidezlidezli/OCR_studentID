@@ -18,12 +18,40 @@ you actually sign in.
 import datetime
 import os
 import re
+import sys
 import threading
+from pathlib import Path
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 HERE = os.path.dirname(os.path.abspath(__file__))
-CREDS_FILE = os.path.join(HERE, "credentials.json")
-TOKEN_FILE = os.path.join(HERE, "token.json")
+
+
+def _app_dir():
+    """Writable per-user dir. In the packaged .app the bundle is read-only, so the
+    token (and any user-supplied credentials.json) live in Application Support."""
+    if getattr(sys, "frozen", False):
+        d = Path.home() / "Library" / "Application Support" / "ANUSA Scanner"
+    else:
+        d = Path(HERE)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def creds_file():
+    """credentials.json: a user-placed one wins, else the copy bundled in the app
+    (or alongside the source)."""
+    user = _app_dir() / "credentials.json"
+    if user.exists():
+        return str(user)
+    bundle = getattr(sys, "_MEIPASS", HERE)   # PyInstaller unpack dir when frozen
+    return os.path.join(bundle, "credentials.json")
+
+
+def token_file():
+    return str(_app_dir() / "token.json")
 
 TRUE_SET = {"TRUE", "1", "YES", "Y", "X", "✓", "TICK", "PRESENT"}
 
@@ -95,8 +123,9 @@ def resolve_col(headers, spec):
 # ── OAuth (Google deps imported lazily) ───────────────────────────────────────
 def _load_cached():
     from google.oauth2.credentials import Credentials
-    if os.path.exists(TOKEN_FILE):
-        return Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    tok = token_file()
+    if os.path.exists(tok):
+        return Credentials.from_authorized_user_file(tok, SCOPES)
     return None
 
 
@@ -123,10 +152,11 @@ def build_service(interactive=False):
         creds.refresh(Request())
         _save(creds)
     elif interactive:
-        if not os.path.exists(CREDS_FILE):
+        cf = creds_file()
+        if not os.path.exists(cf):
             raise FileNotFoundError(
                 "No credentials.json — add your OAuth Desktop client (see SHEETS_SETUP.md).")
-        flow = InstalledAppFlow.from_client_secrets_file(CREDS_FILE, SCOPES)
+        flow = InstalledAppFlow.from_client_secrets_file(cf, SCOPES)
         creds = flow.run_local_server(port=0)
         _save(creds)
     else:
@@ -135,13 +165,13 @@ def build_service(interactive=False):
 
 
 def _save(creds):
-    with open(TOKEN_FILE, "w") as f:
+    with open(token_file(), "w") as f:
         f.write(creds.to_json())
 
 
 def sign_out():
     try:
-        os.remove(TOKEN_FILE)
+        os.remove(token_file())
     except FileNotFoundError:
         pass
 

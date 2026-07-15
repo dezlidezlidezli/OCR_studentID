@@ -20,6 +20,18 @@ echo "→ Generating app icon…"
 python3 make_icon.py
 
 # ── 3. PyInstaller ────────────────────────────────────────────────────────────
+# Bundle credentials.json into the app if present, so operators just "Sign in with
+# Google" (the Desktop client_id/secret is not confidential for installed apps).
+# The token is written to ~/Library/Application Support/ANUSA Scanner at runtime.
+CREDS_FLAG=()
+if [ -f credentials.json ]; then
+    CREDS_FLAG=(--add-data "credentials.json:.")
+    echo "→ Bundling credentials.json"
+else
+    echo "⚠  no credentials.json — operators must place one in"
+    echo "   ~/Library/Application Support/ANUSA Scanner/ (see SHEETS_SETUP.md)"
+fi
+
 echo "→ Building .app bundle…"
 pyinstaller \
     --name "${APP_NAME}" \
@@ -28,6 +40,12 @@ pyinstaller \
     --clean \
     --icon "appicon.icns" \
     --osx-bundle-identifier "au.org.anusa.scanner" \
+    --collect-all googleapiclient \
+    --collect-all google_auth_oauthlib \
+    --collect-submodules google.auth \
+    --collect-submodules google.oauth2 \
+    --hidden-import google_auth_httplib2 \
+    "${CREDS_FLAG[@]}" \
     wedge_app.py
 
 # ── 4. Make it as launch-clean as possible on THIS Mac ────────────────────────

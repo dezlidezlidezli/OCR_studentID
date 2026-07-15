@@ -712,7 +712,23 @@ class App:
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
+def _selftest():
+    """Headless check that the Google stack is importable + buildable in this
+    (possibly frozen) build. Exits 0 on success. Needs a cached token."""
+    try:
+        svc = sheets.build_service(interactive=False)
+        svc.spreadsheets()   # touch the discovery-built resource
+        print("SELFTEST OK: google libs import + sheets service built")
+        return 0
+    except Exception as e:
+        print(f"SELFTEST FAIL: {type(e).__name__}: {e}")
+        return 1
+
+
 def main():
+    if "--selftest" in sys.argv:
+        sys.exit(_selftest())
+
     root = tk.Tk()
     try:
         # Suppress the default Tk console window on macOS
