@@ -358,7 +358,9 @@ async function initOCR() {
   if (typeof Tesseract === 'undefined') throw new Error('OCR engine failed to load — check your connection and reload.');
   setReadout('', 'loading OCR engine…', '');
   const worker = await Tesseract.createWorker('eng');
-  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_BLOCK) ? Tesseract.PSM.SINGLE_BLOCK : '6';
+  // SINGLE_LINE: we OCR a central horizontal band (see grabFrame), so the number is one
+  // line. Skipping full-block layout analysis is ~40% faster than SINGLE_BLOCK.
+  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_LINE) ? Tesseract.PSM.SINGLE_LINE : '7';
   await worker.setParameters({
     tessedit_char_whitelist: '0123456789',
     tessedit_pageseg_mode: psm,
@@ -390,8 +392,22 @@ function grabFrame(rotIdx) {
   ctx.translate(outW / 2, outH / 2);
   ctx.rotate(rad);
   ctx.drawImage(video, -srcW / 2, -srcH / 2, srcW, srcH);
-  return greyscaleStretch(out);
+  // OCR only a central horizontal band. After the correct rotation the student number
+  // runs across the middle, so the band keeps it while dropping the date/label/barcode
+  // rows above and below — ~2× fewer pixels, and it lets us use PSM 7 (single line) for a
+  // markedly faster recognise plus fewer junk candidates (which also speeds orientation
+  // search). A WRONG rotation leaves the number vertical/off-band → reads null → rejected
+  // sooner. OCR_BAND_FRAC is generous so a hand-framed number stays inside; raise it if a
+  // real card's number sits off-centre, lower it for more speed.
+  const bandH = Math.max(24, Math.round(outH * OCR_BAND_FRAC));
+  const bandY = Math.round((outH - bandH) / 2);
+  const band = document.createElement('canvas');
+  band.width = outW; band.height = bandH;
+  band.getContext('2d', { willReadFrequently: true })
+     .drawImage(out, 0, bandY, outW, bandH, 0, 0, outW, bandH);
+  return greyscaleStretch(band);
 }
+const OCR_BAND_FRAC = 0.5;   // central slice of the frame height passed to OCR
 
 // Rotation search + lock.
 //
@@ -413,7 +429,10 @@ let _rtSearchPos = 0;
 let _candR = null;           // rotation of a pending candidate awaiting confirmation
 let _candId = null;          // the candidate's 7-digit value
 let _lockLastId = null;      // previous read at the locked rotation (for 2-in-a-row)
-const RT_FAIL_RESET = 8;
+// Give up a locked rotation after this many non-confirming SHARP frames (nulls, or junk
+// values that never reproduce). Low so a card turned to a NEW orientation is picked up
+// fast instead of being ignored while we cling to the old rotation. Tunable.
+const RT_LOSE_LOCK = 3;
 
 function resetRtState() {
   _rtLocked = null; _rtFailCount = 0; _rtSearchPos = 0;
@@ -606,12 +625,22 @@ async function scanTick() {
     const id = await ocrFrame(frame, tag);
 
     if (_rtLocked !== null) {
-      // Fast path: accept only when two consecutive reads at the locked rotation agree,
-      // so a one-off misread can never be sent.
-      if (id && id === _lockLastId) handleAccept(id);
+      // Accept only when two consecutive reads at the locked rotation agree, so a lone
+      // misread is never sent. A *confirmed* read (same value twice) also proves the
+      // orientation is still right, so it clears the miss counter. Everything else counts
+      // as a miss — a null, OR a valid-but-DIFFERENT value (junk from a card that's been
+      // removed or turned to a new orientation, which changes every frame and never
+      // reproduces). After RT_LOSE_LOCK such misses we drop the lock and re-search, so a
+      // card in a new orientation is picked up in ~1s instead of being ignored while we
+      // cling to the old rotation.
+      if (id && id === _lockLastId) {
+        handleAccept(id);
+        _rtFailCount = 0;
+      } else {
+        _rtFailCount++;
+      }
       _lockLastId = id;
-      if (!id) { if (++_rtFailCount >= RT_FAIL_RESET) resetRtState(); }
-      else _rtFailCount = 0;
+      if (_rtFailCount >= RT_LOSE_LOCK) resetRtState();
       return;
     }
 
