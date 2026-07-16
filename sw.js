@@ -3,7 +3,7 @@
    CDN-hosted OCR/relay libraries (tesseract core + traineddata are several MB;
    after the first online load the app starts instantly). */
 
-const VERSION = 'anusa-scanner-v14-48';
+const VERSION = 'anusa-scanner-v14-49';
 const CORE = [
   './',
   './index.html',

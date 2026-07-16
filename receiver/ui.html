@@ -178,7 +178,7 @@
     <div class="spacer"></div>
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.48</div>
+    <div class="ver" id="ver">v14.49</div>
   </header>
 
   <main>
@@ -420,6 +420,7 @@ $('#loadBtn').onclick = () => { ui.setSheetStat('loading…','warn'); api().load
 $('#syncBtn').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
 ['#colId','#colTick','#colName'].forEach(s => $(s).onchange = () => ui.applyCols());
 $('#manualBtn').onclick = submitManual;
+$('#manualIn').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, ''); });
 $('#manualIn').addEventListener('keydown', e => { if(e.key==='Enter') submitManual(); });
 function submitManual(){ const v=($('#manualIn').value.match(/\d+/g)||[]).join(''); if(!v) return; $('#manualIn').value=''; api().manual(v); }
 $('#csvBtn').onclick = () => api().download_csv();
