@@ -3,11 +3,12 @@
    CDN-hosted OCR/relay libraries (tesseract core + traineddata are several MB;
    after the first online load the app starts instantly). */
 
-const VERSION = 'anusa-scanner-v14-58';
+const VERSION = 'anusa-scanner-v14-59';
 const CORE = [
   './',
   './index.html',
   './app.js',
+  './paddleocr.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
@@ -34,7 +35,7 @@ self.addEventListener('activate', (e) => {
 // traineddata, mqtt) stay cache-first for instant, offline-capable startup.
 function isAppShell(url) {
   return url.origin === self.location.origin &&
-    (/\/(index\.html|app\.js|sw\.js|manifest\.webmanifest)$/.test(url.pathname) ||
+    (/\/(index\.html|app\.js|paddleocr\.js|sw\.js|manifest\.webmanifest)$/.test(url.pathname) ||
      url.pathname.endsWith('/'));
 }
 

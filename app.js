@@ -13,6 +13,7 @@ const DEFAULTS = {
   startDigits: '5678',                             // accepted first digits; blank = any
   mode: 'bridge',                                  // 'bridge' | 'clip'
   broker: 'wss://broker.emqx.io:8084/mqtt',
+  engine: 'tesseract',                             // 'tesseract' (default) | 'paddle' (ML, experimental)
 };
 
 function randomRoom() {
@@ -42,6 +43,7 @@ const state = {
   connected: false,
   worker: null,            // tesseract
   workerReady: false,
+  paddleReady: false,      // PaddleOCR (ONNX) engine loaded (experimental, opt-in)
   stream: null,
   track: null,
   scanning: false,
@@ -463,6 +465,64 @@ async function reinitOCR() {
   _reiniting = false;
 }
 
+// ── PaddleOCR (ONNX) engine — experimental, opt-in via Settings ─────────────────
+// Loaded lazily so Tesseract users never pay for it. ONNX Runtime comes from the CDN
+// (like tesseract.js); the ~10MB models are served from ./models and cached by the SW.
+const ORT_SRC = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    if (document.querySelector(`script[src="${src}"]`)) return res();
+    const s = document.createElement('script');
+    s.src = src; s.onload = res; s.onerror = () => rej(new Error('load failed: ' + src));
+    document.head.appendChild(s);
+  });
+}
+let _paddleLoading = null;
+async function loadPaddle() {
+  if (state.paddleReady) return;
+  if (_paddleLoading) return _paddleLoading;
+  _paddleLoading = (async () => {
+    setReadout('', 'loading ML OCR…', '');
+    await loadScript(ORT_SRC + 'ort.min.js');
+    window.ort.env.wasm.numThreads = 1;             // iOS Safari: single-thread WASM is safest
+    window.ort.env.wasm.wasmPaths = ORT_SRC;
+    await PaddleOCR.init({ ort: window.ort, detUrl: './models/det.onnx',
+                           recUrl: './models/rec.onnx', dictUrl: './models/en_dict.txt' });
+    state.paddleReady = true;
+    setReadout('', 'ready (ML) — frame the number', '');
+  })();
+  try { await _paddleLoading; } finally { _paddleLoading = null; }
+}
+
+// Reuse the app's ID rule (length + prefix + first-digit whitelist) on PaddleOCR's reads.
+function validateId(digits) {
+  return extractId(digits, state.settings.digits, state.settings.prefix, state.settings.startDigits);
+}
+
+// PaddleOCR scan tick — no rotation search (the detector handles orientation). Same
+// two-in-a-row confirm: a value must read identically on two consecutive frames.
+let _pCandId = null;   // pending candidate
+let _pSentId = null;   // already accepted this presentation — blocks re-sends until the card leaves
+async function scanTickPaddle() {
+  const frame = grabFrame(0);
+  if (!frame) return;
+  const fs = focusScore(frame);
+  _focusPeak = Math.max(fs, _focusPeak * 0.92);
+  if (fs < _focusPeak * SHARP_FRAC && _blurSkips < MAX_BLUR_SKIP) { _blurSkips++; return; }
+  _blurSkips = 0;
+  const res = await PaddleOCR.read(frame, { validate: validateId });
+  const id = res.id;
+  if (dbgVisible) { drawDbgCanvas(frame, 'PP ' + (id || '∅'));
+    dbgRecord('PP', res.lines.map(l => l.digits).filter(Boolean).join(' '), id); }
+  if (id && id === _pCandId) {
+    if (_pSentId !== id) { handleAccept(id); _pSentId = id; }
+  } else if (id) {
+    _pCandId = id;
+  } else {
+    _pCandId = null; _pSentId = null;
+  }
+}
+
 /* map the on-screen reticle to source-video pixels (object-fit: cover) */
 // Grab the full video frame with rotIdx additional 90°CCW steps beyond the base
 // portrait correction. rotIdx 0 = most common (card landscape on table, phone portrait).
@@ -521,6 +581,7 @@ const RT_LOSE_LOCK = 3;
 function resetRtState() {
   _rtLocked = null; _rtFailCount = 0; _rtSearchPos = 0;
   _candR = null; _candId = null; _lockLastId = null; _lockSentId = null;
+  _pCandId = null; _pSentId = null;   // PaddleOCR confirm state
   _focusPeak = 0; _blurSkips = 0;   // fresh sharpness baseline for the new session
   state.suppressId = null;   // fresh search — the card left / a new session began
   // Bias the search toward whichever orientation last CONFIRMED so repeat sessions
@@ -706,7 +767,14 @@ function focusScore(canvas) {
 }
 
 async function scanTick() {
-  if (!state.scanning || state.busy || !state.workerReady) return;
+  if (!state.scanning || state.busy) return;
+  if (state.settings.engine === 'paddle') {          // experimental ML engine (opt-in)
+    if (!state.paddleReady) return;                  // still loading — skip until ready
+    state.busy = true;
+    try { await scanTickPaddle(); } catch (e) { /* skip frame */ } finally { state.busy = false; }
+    return;
+  }
+  if (!state.workerReady) return;
   state.busy = true;
   try {
     // Full video frame — the reticle is cosmetic guidance only, never cropped to.
@@ -942,7 +1010,12 @@ async function onStart() {
       }
     }
     if (!state.connected) connectBridge();
-    await initOCR();
+    if (state.settings.engine === 'paddle') {
+      try { await loadPaddle(); }
+      catch (e) { toast('ML OCR failed — using Tesseract'); state.settings.engine = 'tesseract'; await initOCR(); }
+    } else {
+      await initOCR();
+    }
     startScanning();
   } catch (e) {
     stopCamera();
@@ -978,6 +1051,7 @@ function openSheet() {
   $('#setDigits').value = s.digits;
   $('#setPrefix').value = s.prefix || '';
   $('#setStart').value = s.startDigits || '';
+  $('#setEngine').value = s.engine || 'tesseract';
   $('#setMode').value = s.mode;
   $('#setBroker').value = s.broker;
   $('#sheetBack').classList.add('open');
@@ -993,12 +1067,17 @@ function onSave() {
   s.digits = Math.max(4, Math.min(12, Number($('#setDigits').value) || DEFAULTS.digits));
   s.prefix = $('#setPrefix').value.replace(/\D/g, '').slice(0, Math.max(0, s.digits - 1));
   s.startDigits = [...new Set($('#setStart').value.replace(/\D/g, ''))].join(''); // unique digits, blank = any
+  s.engine = $('#setEngine').value === 'paddle' ? 'paddle' : 'tesseract';
   s.mode = $('#setMode').value === 'clip' ? 'clip' : 'bridge';
   s.broker = $('#setBroker').value.trim() || DEFAULTS.broker;
   saveSettings(s);
   refreshChrome();
   closeSheet();
   connectBridge();
+  // If they switched to the ML engine, start loading it now so it's ready to scan.
+  if (s.engine === 'paddle' && !state.paddleReady) {
+    loadPaddle().catch(e => { toast('ML OCR failed to load: ' + e.message); });
+  }
 }
 
 function wireUI() {
