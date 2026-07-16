@@ -51,7 +51,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.67"   # shared version across the Mac app + web app
+VERSION        = "14.68"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -123,6 +123,11 @@ class Bridge:
         phone display + flash results it never scanned itself (e.g. manual entries)."""
         self._publish({"t": "checkin", "seq": seq, "dev": dev,
                        "status": status, "name": name, "id": sid})
+
+    def send_roster(self, rows):
+        """Push the roster + tick state to the paired phones so they can show results
+        (name / registered / already) instantly, with no round-trip. `rows` = [[uid,name,ticked]]."""
+        self._publish({"t": "roster", "r": rows})
 
     def _run(self, broker_url: str):
         u      = urlparse(broker_url)
@@ -273,6 +278,7 @@ class Api:
             self._checkin_result(ev[1], ev[2], ev[3], ev[4])
         elif kind == "paired":
             self._emit("paired", {"dev": ev[1]})
+            self._push_roster()   # a phone (re)joined → give it the roster for instant results
 
     # ── scan handling ────────────────────────────────────────────────────────
     def _handle_scan(self, data, sid):
@@ -346,10 +352,21 @@ class Api:
         except Exception:
             pass
         self._push_attendance()
+        self._push_roster()
 
     def _push_attendance(self):
         try:
             self._emit("attendance", self.sheet.attendance())
+        except Exception:
+            pass
+
+    def _push_roster(self):
+        """Send the roster + tick state to the paired phones (MQTT) so they can show scan
+        results instantly. No-op until the sheet is set up."""
+        if not (self.sheet and self.sheet_ready):
+            return
+        try:
+            self.bridge.send_roster(self.sheet.roster_state())
         except Exception:
             pass
 
@@ -418,6 +435,15 @@ class Api:
 
     def set_mode(self, m):
         self.mode = m if m in ("keys", "sheet") else "keys"
+        # Sheet mode → give phones the roster for instant results; keystroke mode → clear it
+        # so a stale roster can't make phones show sheet-style results.
+        if self.mode == "sheet":
+            self._push_roster()
+        else:
+            try:
+                self.bridge.send_roster([])
+            except Exception:
+                pass
 
     def connect(self, room, broker):
         room = (room or "").strip().upper()

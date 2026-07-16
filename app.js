@@ -51,6 +51,8 @@ const state = {
   history: (() => { try { return JSON.parse(localStorage.getItem('wedge.hist') || '[]'); } catch (e) { return []; } })(),
   audio: null,
   wakeLock: null,
+  roster: null,        // uid → {name, ticked}, pushed by the Mac in sheet mode; null = not synced
+  _shown: {},          // seq → status shown locally, so the Mac's echo doesn't double-flash
 };
 
 /* ────────────────────────── crypto ──────────────────────────── */
@@ -124,29 +126,31 @@ async function connectBridge() {
         if (own) markHistory(msg.seq, 'typed', 'ok');
         return;
       }
-      if (msg.t === 'checkin' && (own || manual)) {
-        // Receiver flipped (or couldn't flip) the student's tick on the Google Sheet.
-        const map = {
-          'checked-in':     ['checked in ✓',   'ok'],
-          'already':        ['already in',     'warn'],
-          'not-registered': ['not registered', 'bad'],
-          'error':          ['sheet error',    'bad'],
-          'fuzzy':          ['confirm on receiver', 'warn'],
-          'test':           ['not typed (Mac focused)', 'warn'],
-        };
-        const [txt, cls] = map[msg.status] || [msg.status, ''];
-        const label = txt + (msg.name ? '  ·  ' + msg.name : '');
-        // The confirm/warn/fail sound plays HERE — on the check-in result (sheet mode) —
-        // not on the raw scan. Keystroke mode sends 'ack', never 'checkin', so it's silent.
-        unlockAudio(); resultSound(msg.status);
+      if (msg.t === 'roster') { applyRoster(msg.r); return; }
+      if (msg.t === 'checkin') {
+        // Keep the local roster's tick state in sync with EVERY check-in (this phone AND any
+        // other phone in the room), so a repeat scan correctly reads as "already".
+        if (msg.id && state.roster) {
+          const rr = state.roster[normId(msg.id)];
+          if (rr) {
+            if (msg.status === 'checked-in' || msg.status === 'already') rr.ticked = true;
+            else if (msg.status === 'error') rr.ticked = false;   // write failed → allow retry
+          }
+        }
+        if (!(own || manual)) return;   // another phone's scan: sync only, don't display
+        // The receiver's AUTHORITATIVE result. If it just confirms what we already showed
+        // locally (same seq + status), don't replay the sound / re-flash — only correct it.
+        const [label, cls] = resultLabel(msg.status, msg.name);
+        const confirmsLocal = own && state._shown[msg.seq] === msg.status;
+        if (!confirmsLocal) { unlockAudio(); resultSound(msg.status); }
         if (own) {
           const h = state.history.find(x => x.seq === msg.seq);
           markHistory(msg.seq, label, cls);
           if (h && state.lastAccepted.id === h.id) setReadout(h.id, label, cls);
-          showResult(msg.status, h ? h.id : msg.id, msg.name);
+          if (!confirmsLocal) showResult(msg.status, h ? h.id : msg.id, msg.name);
+          delete state._shown[msg.seq];   // reconciled — drop the local-shown marker
         } else {
-          // Manual entry on the Mac — flash here even though we didn't scan it.
-          setReadout(msg.id, label, cls);
+          setReadout(msg.id, label, cls);   // manual entry on the Mac
           showResult(msg.status, msg.id, msg.name);
         }
       }
@@ -160,6 +164,47 @@ async function sendHello() {
     const payload = await encryptJSON({ t: 'hello', dev: state.deviceId });
     state.client.publish(topicBase() + '/scan', payload, { qos: 1 });
   } catch (e) { /* not fatal */ }
+}
+
+// ── result labels + phone-side roster cache ─────────────────────────────────────
+const normId = (v) => String(v == null ? '' : v).replace(/\D/g, '');
+const RESULT_MAP = {
+  'checked-in':     ['checked in ✓',            'ok'],
+  'already':        ['already in',              'warn'],
+  'not-registered': ['not registered',          'bad'],
+  'error':          ['sheet error',             'bad'],
+  'fuzzy':          ['confirm on receiver',     'warn'],
+  'test':           ['not typed (Mac focused)', 'warn'],
+};
+function resultLabel(status, name) {
+  const [txt, cls] = RESULT_MAP[status] || [status, ''];
+  return [txt + (name ? '  ·  ' + name : ''), cls];
+}
+// The Mac pushes the roster (+tick state) in sheet mode; we cache it to answer scans locally.
+function applyRoster(rows) {
+  if (!rows || !rows.length) { state.roster = null; return; }   // cleared → disable local eval
+  const m = {};
+  for (const row of rows) {
+    if (row && row[0] != null) m[String(row[0])] = { name: row[1] || '', ticked: !!row[2] };
+  }
+  state.roster = m;
+}
+// Instant result straight from the cached roster — no round-trip. The Mac still writes the
+// sheet and its confirmation reconciles this shortly after. Returns true if it showed a result.
+function showLocalResult(id, seq) {
+  if (!state.roster) return false;   // roster not synced (e.g. keystroke mode) → let the Mac answer
+  const r = state.roster[normId(id)];
+  let status, name;
+  if (!r)              { status = 'not-registered'; name = ''; }
+  else if (r.ticked)   { status = 'already';        name = r.name; }
+  else                 { status = 'checked-in';     name = r.name; r.ticked = true; /* optimistic */ }
+  const [label, cls] = resultLabel(status, name);
+  unlockAudio(); resultSound(status);
+  markHistory(seq, label, cls);
+  setReadout(id, label, cls);
+  showResult(status, id, name);
+  state._shown[seq] = status;
+  return true;
 }
 
 async function sendScan(id, source) {
@@ -180,14 +225,19 @@ async function sendScan(id, source) {
     return;
   }
 
+  // Show the result instantly from the cached roster (if synced); the Mac still records it.
+  const shownLocal = showLocalResult(id, item.seq);
+
   const payload = await encryptJSON({ t: 'scan', id, ts: item.ts, seq: item.seq, dev: state.deviceId, src: source });
-  markHistory(item.seq, state.connected ? 'sending' : 'queued', '');
-  setReadout(id, state.connected ? 'sending…' : 'queued', state.connected ? '' : 'warn');
+  if (!shownLocal) {
+    markHistory(item.seq, state.connected ? 'sending' : 'queued', '');
+    setReadout(id, state.connected ? 'sending…' : 'queued', state.connected ? '' : 'warn');
+  }
   if (!state.client) { markHistory(item.seq, 'no bridge', 'warn'); return; }
   state.client.publish(topicBase() + '/scan', payload, { qos: 1 }, (err) => {
     if (err) { markHistory(item.seq, 'failed', 'warn'); setReadout(id, 'send failed', 'warn'); }
-    else {
-      // relay accepted; upgrade to "typed" when the receiver acks
+    else if (!shownLocal) {
+      // relay accepted; upgrade to "typed"/result when the receiver responds
       const h = state.history.find(x => x.seq === item.seq);
       if (h && h.status !== 'typed') { markHistory(item.seq, 'sent', ''); setReadout(id, 'sent', 'ok'); }
     }

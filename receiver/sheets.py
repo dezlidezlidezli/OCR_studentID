@@ -321,6 +321,28 @@ class SheetSession:
                 out.append({"id": uid, "name": str(name)})
             return out
 
+    def roster_state(self):
+        """Compact roster for the phones so they can show results instantly without a
+        round-trip: [[uid, name, ticked], ...]. ticked=1 iff the student is fully checked in
+        (all their rows TRUE) — i.e. a scan would be 'already'; 0 means a scan would check in."""
+        with self._lock:
+            if self.id_i is None:
+                return []
+            order, info = [], {}
+            for r in range(1, len(self.values)):
+                uid = normalize(self._cell(r, self.id_i))
+                if not uid:
+                    continue
+                is_true = (self.tick_i is not None and
+                           str(self._cell(r, self.tick_i)).strip().upper() in TRUE_SET)
+                if uid not in info:
+                    nm = self._cell(r, self.name_i) if self.name_i is not None else ""
+                    info[uid] = [str(nm), is_true]
+                    order.append(uid)
+                else:
+                    info[uid][1] = info[uid][1] and is_true
+            return [[u, info[u][0], 1 if info[u][1] else 0] for u in order]
+
     def attendance(self):
         """Expected attendance: how many rows have a TRUE/FALSE tick box, and how many
         are TRUE."""
