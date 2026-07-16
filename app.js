@@ -491,61 +491,6 @@ function grabFrame(rotIdx) {
   return greyscaleStretch(out);
 }
 
-// ── fast confirm: crop to where the digits just were ────────────────────────────
-// After a valid full-frame read we know the number's bounding box. The confirming read
-// only needs to reproduce THAT number, so we OCR a small padded crop of the same region
-// instead of the whole frame — far fewer pixels → much faster. This is NOT the rejected
-// fixed central band: the box is data-driven (the digits Tesseract just located), so the
-// crop genuinely contains one line of digits. PSM stays 6 (the blessed setting) — the
-// speed comes purely from the smaller image, so no PSM-7 regression risk. If the card
-// drifted out of the crop the read just fails and we fall back to a full-frame confirm,
-// so reliability can never regress. Flip CONFIRM_CROP off to get the plain v14.56 confirm.
-const CONFIRM_CROP = true;
-const CROP_PAD = 0.6;    // padding around the box, as a fraction of its size (hand drift)
-const CROP_MIN_PAD = 14; // …but never less than this many px
-const CROP_UP = 2;       // upscale the crop so small digits stay in Tesseract's comfort zone
-
-// Crop `full` (a full grab) to the padded `box` and upscale. Returns null if degenerate.
-function cropFrame(full, box) {
-  const bw = box.x1 - box.x0, bh = box.y1 - box.y0;
-  if (bw <= 0 || bh <= 0) return null;
-  const padX = Math.max(bw * CROP_PAD, CROP_MIN_PAD);
-  const padY = Math.max(bh * CROP_PAD, CROP_MIN_PAD);
-  const sx = Math.max(0, Math.floor(box.x0 - padX));
-  const sy = Math.max(0, Math.floor(box.y0 - padY));
-  const sw = Math.min(full.width  - sx, Math.ceil(bw + 2 * padX));
-  const sh = Math.min(full.height - sy, Math.ceil(bh + 2 * padY));
-  if (sw <= 0 || sh <= 0) return null;
-  const out = document.createElement('canvas');
-  out.width = Math.round(sw * CROP_UP);
-  out.height = Math.round(sh * CROP_UP);
-  const ctx = out.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(full, sx, sy, sw, sh, 0, 0, out.width, out.height);
-  return out;   // already greyscale-stretched (full was) — don't re-stretch
-}
-
-// Bounding box (in `full`-grab px) of the line that carries `id`. Uses Tesseract's line
-// tree when present; returns null if unavailable so the caller keeps the full-frame path.
-function findIdBox(data, id) {
-  if (!data) return null;
-  let lines = data.lines;
-  if (!lines && data.blocks) {   // flatten block→paragraph→line if no convenience getter
-    lines = [];
-    for (const b of data.blocks || [])
-      for (const p of (b.paragraphs || []))
-        for (const ln of (p.lines || [])) lines.push(ln);
-  }
-  if (!lines) return null;
-  for (const ln of lines) {
-    const digits = (ln.text || '').replace(/\D/g, '');
-    if (digits.indexOf(id) >= 0 && ln.bbox) {
-      const b = ln.bbox;
-      if (b.x1 > b.x0 && b.y1 > b.y0) return { x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 };
-    }
-  }
-  return null;
-}
-
 // Rotation search + lock.
 //
 // The card can be presented in any of the four 90° orientations. A single 7-digit
@@ -565,9 +510,6 @@ let _rtSearchOrder = [0, 1, 2, 3];
 let _rtSearchPos = 0;
 let _candR = null;           // rotation of a pending candidate awaiting confirmation
 let _candId = null;          // the candidate's 7-digit value
-let _candBox = null;         // bbox (in full-grab px) of the candidate's digits — lets the
-                             // confirming read OCR just that region (much faster). null → the
-                             // confirm falls back to a full-frame read (no speed change).
 let _lockLastId = null;      // previous read at the locked rotation (for 2-in-a-row)
 let _lockSentId = null;      // id already sent during the CURRENT lock session — blocks
                              // re-sends of a lingering card WITHOUT a timer (blur-proof)
@@ -578,7 +520,7 @@ const RT_LOSE_LOCK = 3;
 
 function resetRtState() {
   _rtLocked = null; _rtFailCount = 0; _rtSearchPos = 0;
-  _candR = null; _candId = null; _candBox = null; _lockLastId = null; _lockSentId = null;
+  _candR = null; _candId = null; _lockLastId = null; _lockSentId = null;
   _focusPeak = 0; _blurSkips = 0;   // fresh sharpness baseline for the new session
   state.suppressId = null;   // fresh search — the card left / a new session began
   // Bias the search toward whichever orientation last CONFIRMED so repeat sessions
@@ -714,10 +656,7 @@ async function ocrFrame(frame, modeLabel) {
   let data, to;
   try {
     const res = await Promise.race([
-      // Ask for the line/word tree (blocks) too, so a valid read can report WHERE the
-      // digits are — the confirming read crops to that box. Recognition cost is unchanged;
-      // only the small result tree is serialised back.
-      state.worker.recognize(frame, {}, { blocks: true }),
+      state.worker.recognize(frame),
       new Promise((_, rej) => { to = setTimeout(() => rej(new Error('ocr-timeout')), OCR_TIMEOUT_MS); }),
     ]);
     clearTimeout(to);
@@ -725,12 +664,12 @@ async function ocrFrame(frame, modeLabel) {
   } catch (e) {
     clearTimeout(to);
     reinitOCR();   // worker hung/died — rebuild it so the loop keeps going
-    return { id: null, box: null };
+    return null;
   }
   const id = extractId(data.text || '', state.settings.digits, state.settings.prefix, state.settings.startDigits);
   captureFrame(modeLabel, frame, data.text || '', id);
   dbgRecord(modeLabel, data.text || '', id);
-  return { id, box: id ? findIdBox(data, id) : null };
+  return id;
 }
 
 // ── sharpness gate ──────────────────────────────────────────────
@@ -775,22 +714,12 @@ async function scanTick() {
 
     // Pick which rotation to read: locked → known-good; candidate → recheck it;
     // otherwise probe the next rotation in the search cycle.
-    let r, tag, frame;
-    if (_rtLocked !== null) {
-      r = _rtLocked; tag = `RT${r}`;
-      frame = grabFrame(r);
-    } else if (_candR !== null) {
-      // Rechecking a candidate. If we have its box, OCR just a padded crop of that region
-      // (fast). If not — or the crop is degenerate — fall back to the full frame.
-      r = _candR;
-      const full = grabFrame(r);
-      if (CONFIRM_CROP && _candBox && full) frame = cropFrame(full, _candBox);
-      if (frame) { tag = `RT${r}=✂`; }
-      else       { frame = full; tag = `RT${r}=`; }
-    } else {
-      r = _rtSearchOrder[_rtSearchPos]; tag = `RT${r}?`;
-      frame = grabFrame(r);
-    }
+    let r, tag;
+    if (_rtLocked !== null)   { r = _rtLocked; tag = `RT${r}`; }
+    else if (_candR !== null) { r = _candR;    tag = `RT${r}=`; }   // rechecking candidate
+    else                      { r = _rtSearchOrder[_rtSearchPos]; tag = `RT${r}?`; }
+
+    const frame = grabFrame(r);
     if (!frame) return;
 
     // Skip motion-blurred frames (cheap) so OCR only spends time on sharp ones.
@@ -804,7 +733,7 @@ async function scanTick() {
     _blurSkips = 0;
 
     if (dbgVisible) drawDbgCanvas(frame, tag);
-    const { id, box } = await ocrFrame(frame, tag);
+    const id = await ocrFrame(frame, tag);
 
     if (_rtLocked !== null) {
       // Accept only when two consecutive reads at the locked rotation agree, so a lone
@@ -835,16 +764,11 @@ async function scanTick() {
         // Same 7-digit value twice in a row at the same rotation → trust and lock.
         _rtLocked = r; _lockLastId = id; _rtFailCount = 0;
         localStorage.setItem('wedge.rot', String(r)); // remember the CONFIRMED rotation
-        _candR = null; _candId = null; _candBox = null;
+        _candR = null; _candId = null;
         handleAccept(id);
         _lockSentId = id;   // this lock session has now sent this id
-      } else if (_candBox) {
-        // The cropped confirm didn't reproduce it — the card may have drifted out of the
-        // crop. Don't discard yet: drop the box so the NEXT tick re-confirms on the full
-        // frame (the plain v14.56 check), so a fast crop can never cost us a real read.
-        _candBox = null;
       } else {
-        // Full-frame confirm also failed — it was noise from a wrong orientation. Move on.
+        // Candidate didn't reproduce — it was noise from a wrong orientation. Move on.
         _candR = null; _candId = null;
         _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length;
       }
@@ -852,10 +776,9 @@ async function scanTick() {
     }
 
     // Fresh probe of a search rotation. Require a confirming second read: a single valid
-    // 7-digit read is held as a candidate, and only sent if the next read at the same
-    // rotation reproduces it — so a lone misread is never accepted. We also stash the
-    // digits' box so that confirm can crop to it (fast).
-    if (id) { _candR = r; _candId = id; _candBox = box; }   // hold it; next tick confirms
+    // 7-digit read is held as a candidate, and only sent if the very next read at the same
+    // rotation reproduces it — so a lone misread is never accepted.
+    if (id) { _candR = r; _candId = id; }   // hold it; next tick confirms or discards
     else    { _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length; }
   } catch(e) { /* transient error: skip frame */ }
   finally { state.busy = false; }
