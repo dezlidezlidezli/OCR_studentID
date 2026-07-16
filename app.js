@@ -469,35 +469,55 @@ async function fetchProgress(url, onByte, stallMs = 45000) {
   return out;
 }
 
+// Download progress bar in the deck. pct 0-100 = determinate; null = indeterminate (moving
+// stripe, used while ORT fetches its WASM which we can't byte-track); false = hide.
+function dlBar(pct) {
+  const bar = $('#dlBar'), fill = $('#dlFill');
+  if (!bar || !fill) return;
+  if (pct === false) { bar.style.display = 'none'; fill.classList.remove('indet'); fill.style.width = '0'; return; }
+  bar.style.display = 'block';
+  if (pct === null) { fill.style.width = ''; fill.classList.add('indet'); }
+  else { fill.classList.remove('indet'); fill.style.width = Math.max(2, Math.min(100, pct)) + '%'; }
+}
+
 let _paddleLoading = null;
 async function loadPaddle() {
   if (state.paddleReady) return;
   if (_paddleLoading) return _paddleLoading;
   _paddleLoading = (async () => {
-    // First run pulls the models (~10MB) + the ONNX runtime WASM (~11MB); everything is
-    // cached by the service worker afterwards, so this only happens once. Show real progress
-    // so it's obviously downloading, not frozen.
-    const urls = ['./models/det.onnx', './models/rec.onnx'];
-    const sizes = [2429873, 7830888], total = sizes[0] + sizes[1];
-    const bytes = [];
-    let base = 0;
-    for (let i = 0; i < urls.length; i++) {
-      bytes[i] = await fetchProgress(urls[i], (rcv) => {
-        const pct = Math.min(99, Math.round((base + rcv) / total * 100));
-        setReadout('', `downloading OCR model… ${pct}%`, 'warn');
-      });
-      base += sizes[i];
+    try {
+      // First run pulls the models (~10MB) + the ONNX runtime WASM (~11MB); everything is
+      // cached by the service worker afterwards, so this only happens once. Show a real
+      // progress bar so it's obviously downloading, not frozen.
+      const urls = ['./models/det.onnx', './models/rec.onnx'];
+      const sizes = [2429873, 7830888], total = sizes[0] + sizes[1];
+      const bytes = [];
+      let base = 0;
+      for (let i = 0; i < urls.length; i++) {
+        bytes[i] = await fetchProgress(urls[i], (rcv) => {
+          const pct = Math.min(99, Math.round((base + rcv) / total * 100));
+          dlBar(pct);
+          setReadout('', `downloading OCR model… ${pct}%`, 'warn');
+        });
+        base += sizes[i];
+      }
+      // Load the WASM-ONLY ORT build (small loader, no WebGPU — WebGPU init is flaky/slow on
+      // iOS Safari and was the likely hang). It fetches an ~11MB WASM once, then SW-cached.
+      dlBar(null);   // indeterminate — ORT fetches its WASM internally (no byte progress)
+      setReadout('', 'starting OCR engine (~11 MB)…', 'warn');
+      await loadScript(ORT_SRC + 'ort.wasm.min.js');
+      window.ort.env.wasm.numThreads = 1;             // no cross-origin isolation → single-thread
+      window.ort.env.wasm.wasmPaths = ORT_SRC;
+      await PaddleOCR.init({ ort: window.ort, det: bytes[0], rec: bytes[1],
+                             dictUrl: './models/en_dict.txt' });
+      state.paddleReady = true;
+      dlBar(100);
+      setReadout('', 'ready — frame the number', '');
+      setTimeout(() => dlBar(false), 500);
+    } catch (e) {
+      dlBar(false);
+      throw e;
     }
-    // Load the WASM-ONLY ORT build (small loader, no WebGPU — WebGPU init is flaky/slow on
-    // iOS Safari and was the likely hang). It fetches an ~11MB WASM once, then SW-cached.
-    setReadout('', 'starting OCR engine (~11 MB)…', 'warn');
-    await loadScript(ORT_SRC + 'ort.wasm.min.js');
-    window.ort.env.wasm.numThreads = 1;             // no cross-origin isolation → single-thread
-    window.ort.env.wasm.wasmPaths = ORT_SRC;
-    await PaddleOCR.init({ ort: window.ort, det: bytes[0], rec: bytes[1],
-                           dictUrl: './models/en_dict.txt' });
-    state.paddleReady = true;
-    setReadout('', 'ready — frame the number', '');
   })();
   try { await _paddleLoading; } finally { _paddleLoading = null; }
 }
