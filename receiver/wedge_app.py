@@ -51,7 +51,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.56"   # shared version across the Mac app + web app
+VERSION        = "14.57"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -343,8 +343,34 @@ class Api:
         except Exception:
             pass
 
+    # Virtual keycodes for the digit keys + Return (US layout, layout-independent for digits).
+    _MAC_KEYCODES = {"0": 29, "1": 18, "2": 19, "3": 20, "4": 21,
+                     "5": 23, "6": 22, "7": 26, "8": 28, "9": 25}
+    _MAC_RETURN = 36
+
     def _type_id(self, sid):
+        """Type the number + Enter into the frontmost app.
+
+        macOS: post CGEvents with explicit digit keycodes via Quartz. We must NOT use
+        pynput here — pynput looks the character up through HIToolbox/TSM, which macOS only
+        permits on the main thread, and this runs on the MQTT drain thread. Doing it
+        in-process aborted the whole app (SIGTRAP, see crash reports). CGEventPost is
+        thread-safe and needs only the Accessibility permission we already require — no new
+        Automation prompt, and no TSM lookup (we type digits by keycode). Other platforms
+        fall back to pynput."""
         try:
+            if sys.platform == "darwin":
+                import Quartz
+                def tap(code):
+                    for down in (True, False):
+                        ev = Quartz.CGEventCreateKeyboardEvent(None, code, down)
+                        Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+                for ch in str(sid):
+                    code = self._MAC_KEYCODES.get(ch)
+                    if code is not None:
+                        tap(code)
+                tap(self._MAC_RETURN)
+                return True
             if self._kb is None:
                 from pynput.keyboard import Controller, Key
                 self._kb = (Controller(), Key)
@@ -374,7 +400,8 @@ class Api:
     # ── JS-callable methods ──────────────────────────────────────────────────
     def get_state(self):
         self._emit("version", {"v": VERSION})
-        return {"version": VERSION}
+        self._emit("mode", {"mode": self.mode})   # UI adopts the backend's real mode
+        return {"version": VERSION, "mode": self.mode}
 
     def set_focus(self, f):
         self.focused = bool(f)

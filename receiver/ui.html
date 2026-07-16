@@ -201,7 +201,7 @@
     <div class="spacer"></div>
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.56</div>
+    <div class="ver" id="ver">v14.57</div>
   </header>
 
   <main>
@@ -436,6 +436,7 @@ window.uiEvent = (type, p={}) => {
   else if(type==='paired'){ $('#pairView').classList.add('hidden'); }
   else if(type==='reset'){ ui.doReset(); }
   else if(type==='version'){ $('#ver').textContent='v'+p.v; }
+  else if(type==='mode'){ ui.setMode(p.mode); }   // adopt the backend's mode (source of truth)
 };
 
 /* UI → Python */
@@ -573,9 +574,20 @@ function mockQR(){ // simple placeholder grid so the modal previews
 window.addEventListener('focus', () => { ui._focused=true; ui.updateBanner(); if(window.pywebview) api().set_focus(true); });
 window.addEventListener('blur',  () => { ui._focused=false; ui.updateBanner(); if(window.pywebview) api().set_focus(false); });
 
-/* boot: in real app, ask Python for state; in preview, seed a demo */
-window.addEventListener('pywebviewready', () => api().get_state());
-if(!window.pywebview){ // preview seed
+/* boot: in the real app, adopt Python's state; in a plain browser, seed a demo preview.
+   The preview seed must NEVER run inside the app. It used to: window.pywebview isn't
+   injected yet when this inline script first runs, so `!window.pywebview` was true in the
+   app too — the seed flipped the toggle to Union Pantry WITHOUT telling the backend, so
+   the backend stayed in keystroke mode → scans showed "test", and typing crashed the app
+   (pynput on a background thread). So defer the seed and only run it if pywebview never
+   initialises (i.e. we really are a plain browser). */
+let _appReady = false;
+window.addEventListener('pywebviewready', () => { _appReady = true; api().get_state(); });
+setTimeout(() => {
+  // Any sign of the real backend → we're in the app, never seed. Several independent
+  // signals so this can't hinge on a timing race: the API object, the ready event, or a
+  // real status/sign-in event having already arrived.
+  if (_appReady || window.pywebview || ui.connected || ui.signedIn) return;
   ui.setMode('sheet'); ui.setConn(true,'9F2GM2'); ui._focused=true;
   window.uiEvent('signed_in',{ok:true});
   window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:['UID:','Attendence','Full Name:']});
@@ -584,7 +596,7 @@ if(!window.pywebview){ // preview seed
   ui.addHistory('7752506','already','warn','23:30:02');
   ui.addHistory('8047692','checked in','ok','23:27:00');
   window.uiEvent('show_pairing',{room:'9F2GM2',img:mockQR()});   // default: pairing screen
-}
+}, 1000);
 </script>
 </body>
 </html>

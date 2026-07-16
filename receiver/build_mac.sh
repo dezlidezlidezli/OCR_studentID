@@ -47,6 +47,7 @@ pyinstaller \
     --collect-submodules qrcode \
     --collect-all webview \
     --hidden-import google_auth_httplib2 \
+    --hidden-import Quartz \
     --add-data "ui.html:." \
     "${CREDS_FLAG[@]}" \
     wedge_app.py
