@@ -134,6 +134,7 @@ async function connectBridge() {
           'not-registered': ['not registered', 'bad'],
           'error':          ['sheet error',    'bad'],
           'fuzzy':          ['confirm on receiver', 'warn'],
+          'test':           ['not typed (Mac focused)', 'warn'],
         };
         const [txt, cls] = map[msg.status] || [msg.status, ''];
         const label = txt + (msg.name ? '  ·  ' + msg.name : '');
@@ -292,7 +293,7 @@ function chimeFail() { tone([[247, 0], [165, 0.14]], 'sawtooth', 0.17, 0.26);   
 // Sound for a check-in result (sheet mode only — driven by the receiver's status).
 function resultSound(status) {
   if (status === 'checked-in') chimeOk();
-  else if (status === 'already' || status === 'fuzzy') chimeWarn();
+  else if (status === 'already' || status === 'fuzzy' || status === 'test') chimeWarn();
   else chimeFail();                       // not-registered / error
 }
 
@@ -397,6 +398,7 @@ function showResult(status, id, name) {
     'not-registered': ['bad',  '✕', 'NOT REGISTERED'],
     'error':          ['bad',  '⚠', 'SHEET ERROR'],
     'fuzzy':          ['warn', '?', 'CONFIRM ON MAC'],
+    'test':           ['warn', '⊘', 'NOT TYPED'],
   };
   const [cls, glyph, word] = map[status] || ['', '', status];
   const el = $('#result');
@@ -789,7 +791,6 @@ function handleAccept(id) {
   state.lastAccepted = { id, t: now };
 
   flashGreen(); flashReticle();   // sound now plays on the check-in result, not the scan
-  const del = $('#deleteBtn'); del.dataset.rid = id; del.style.display = 'block';
   setReadout(id, '', '');
   sendScan(id, 'ocr');
 }
@@ -833,7 +834,6 @@ function stopScanning() {
   state.scanning = false;
   if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; }
   $('#pauseBtn').style.display = 'none';
-  $('#deleteBtn').style.display = 'none';
 }
 
 /* ────────────────────────── UI wiring ───────────────────────── */
@@ -1014,21 +1014,6 @@ function wireUI() {
     $('#dbgText').style.display = dbgVisible ? 'block' : 'none';
     $('#saveFramesBtn').style.display = dbgVisible ? 'block' : 'none';
     if (!dbgVisible) { const d = $('#dbgCanvas'); d.width = 0; $('#dbgText').textContent = ''; _frameLog.length = 0; }
-  });
-
-  $('#deleteBtn').addEventListener('click', () => {
-    const id = $('#deleteBtn').dataset.rid;
-    if (!id) return;
-    // Remove the just-sent scan from the log without re-sending, and suppress this id so
-    // the same card still in view isn't re-typed. Cleared once a different card is read.
-    state.history = state.history.filter(h => h.id !== id);
-    persistHistory(); renderHistory();
-    state.suppressId = id;
-    state.lastAccepted = { id: null, t: 0 };
-    _lockSentId = id;   // the current lock has "handled" this id — don't let it re-send
-    $('#deleteBtn').style.display = 'none';
-    setReadout('', 'deleted', 'warn');
-    toast('Deleted ' + id);
   });
 
   $('#saveFramesBtn').addEventListener('click', saveFrames);

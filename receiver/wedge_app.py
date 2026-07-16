@@ -51,7 +51,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.54"   # shared version across the Mac app + web app
+VERSION        = "14.55"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -287,8 +287,12 @@ class Api:
             return
         # keystroke mode
         if self.focused:
+            # This window has focus, so typing would land in the receiver itself, not the
+            # target app — so we deliberately DON'T type. Tell the phone too, or its row
+            # would sit on "sent" while this screen says "not typed" (a UI/backend mismatch).
             self._record(ts, sid, "test")
             self._emit("result", {"status": "test", "id": sid, "name": "", "ts": ts})
+            self.bridge.send_status(data.get("seq"), data.get("dev"), "test", "", sid)
             return
         ok = self._type_id(sid)
         self._record(ts, sid, "typed" if ok else "error")
