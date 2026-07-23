@@ -53,6 +53,8 @@ const state = {
   wakeLock: null,
   roster: null,        // uid → {name, ticked}, pushed by the Mac in sheet mode; null = not synced
   _shown: {},          // seq → status shown locally, so the Mac's echo doesn't double-flash
+  rxMode: null,        // receiver mode: null/'keys'/'sheet' = normal scan; 'textbook' = two-stage flow
+  tbStage: null,       // Textbook Library flow: 'student' | 'await' | 'textbook' | 'done'
 };
 
 /* ────────────────────────── crypto ──────────────────────────── */
@@ -126,6 +128,7 @@ async function connectBridge() {
         if (own) markHistory(msg.seq, 'typed', 'ok');
         return;
       }
+      if (msg.t === 'mode') { applyRxMode(msg.mode); return; }
       if (msg.t === 'roster') { applyRoster(msg.r); return; }
       if (msg.t === 'checkin') {
         // Keep the local roster's tick state in sync with EVERY check-in (this phone AND any
@@ -616,6 +619,67 @@ function _lev(a, b) {
   return prev[n];
 }
 
+// ── Textbook Library two-stage flow ─────────────────────────────────────────────
+// The receiver tells us its mode. In 'textbook' mode a scan is a two-step flow: read the
+// student number, prompt "now scan textbook code", then read the code and show "complete".
+let _tbStudent = null;
+function applyRxMode(mode) {
+  const prev = state.rxMode;
+  state.rxMode = mode;
+  if (mode === 'textbook' && prev !== 'textbook') {
+    state.tbStage = 'student'; _tbStudent = null; resetPaddleConfirm(); hideTbOverlay();
+  } else if (mode !== 'textbook' && prev === 'textbook') {
+    state.tbStage = null; _tbStudent = null; resetPaddleConfirm(); hideTbOverlay();
+  }
+}
+function resetPaddleConfirm() { _pCandId = null; _pSentId = null; }
+
+// What to read + what to do with it right now. Normal modes are unchanged (student number →
+// check-in/keystroke). Textbook mode swaps in the textbook reader + the two-stage handlers.
+function currentScanTask() {
+  if (state.rxMode === 'textbook') {
+    if (state.tbStage === 'student')  return { validate: validateId, accept: onStudentScanned };
+    if (state.tbStage === 'textbook') return { validate: (t) => extractTextbookCode(t), accept: onTextbookScanned };
+    return null;   // 'await' / 'done' → waiting for a button tap, don't scan
+  }
+  return { validate: validateId, accept: handleAccept };
+}
+function onStudentScanned(studentId) {
+  _tbStudent = studentId;
+  flashScan(); flashReticle(); unlockAudio(); chimeWarn();   // captured — one more to go
+  state.tbStage = 'await'; resetPaddleConfirm();
+  showTbOverlay('await', studentId, null);
+}
+function onTextbookScanned(code) {
+  flashScan(); flashReticle(); unlockAudio(); chimeOk();     // complete
+  state.tbStage = 'done'; resetPaddleConfirm();
+  sendTextbookPair(_tbStudent, code);
+  showTbOverlay('done', _tbStudent, code);
+}
+async function sendTextbookPair(student, code) {
+  if (!state.client) return;
+  state.seq += 1; localStorage.setItem('wedge.seq', String(state.seq));
+  try {
+    const payload = await encryptJSON({ t: 'tbpair', student, code, ts: Date.now(),
+                                        seq: state.seq, dev: state.deviceId });
+    state.client.publish(topicBase() + '/scan', payload, { qos: 1 });
+  } catch (e) { /* not fatal — the pairing still showed on the phone */ }
+}
+function showTbOverlay(stage, student, code) {
+  const ov = $('#tbOverlay'); if (!ov) return;
+  if (stage === 'await') {
+    $('#tbTitle').textContent = 'Student captured';
+    $('#tbSub').textContent = 'u' + student;
+    $('#tbBtn').textContent = 'Okay — scan textbook code';
+  } else {
+    $('#tbTitle').textContent = 'Complete ✓';
+    $('#tbSub').textContent = 'u' + student + '  →  ' + code;
+    $('#tbBtn').textContent = 'Next student';
+  }
+  ov.style.display = 'flex';
+}
+function hideTbOverlay() { const ov = $('#tbOverlay'); if (ov) ov.style.display = 'none'; }
+
 // Scan tick — no rotation search (the detector handles orientation). Two-in-a-row confirm:
 // a value must read identically on two consecutive frames before it's accepted, so a lone
 // misread is never sent. _pSentId then blocks re-sends of a lingering card until it leaves.
@@ -623,6 +687,8 @@ let _pCandId = null;   // pending candidate
 let _pSentId = null;   // already accepted this presentation — cleared when the card leaves
 async function scanTick() {
   if (!state.scanning || state.busy || !state.paddleReady) return;
+  const task = currentScanTask();
+  if (!task) return;   // gated stage (e.g. textbook prompt showing) — don't scan
   state.busy = true;
   try {
     const frame = grabFrame();
@@ -636,16 +702,17 @@ async function scanTick() {
       return;
     }
     _blurSkips = 0;
-    const res = await PaddleOCR.read(frame, { validate: validateId });
-    const id = res.id;
-    const raw = res.lines.map(l => l.digits).filter(Boolean).join(' ');
-    if (dbgVisible) { drawDbgCanvas(frame, id || '∅'); }
-    captureFrame(id || '∅', frame, raw, id);
-    dbgRecord('PP', raw, id);
-    if (id && id === _pCandId) {
-      if (_pSentId !== id) { handleAccept(id); _pSentId = id; }
-    } else if (id) {
-      _pCandId = id;
+    const res = await PaddleOCR.read(frame, { validate: task.validate });
+    const val = res.id;   // the validated value (student number OR textbook code)
+    const raw = res.lines.map(l => l.text).filter(Boolean).join(' ');
+    if (dbgVisible) { drawDbgCanvas(frame, val || '∅'); }
+    captureFrame(val || '∅', frame, raw, val);
+    dbgRecord('PP', raw, val);
+    // Two-in-a-row confirm, then run the task's accept action.
+    if (val && val === _pCandId) {
+      if (_pSentId !== val) { task.accept(val); _pSentId = val; }
+    } else if (val) {
+      _pCandId = val;
     } else {
       _pCandId = null; _pSentId = null;
     }
@@ -1039,6 +1106,10 @@ function wireUI() {
   $('#goBtn').addEventListener('click', onStart);
   $('#pauseBtn').addEventListener('click', onPause);
   $('#reloadBtn').addEventListener('click', forceReload);
+  $('#tbBtn').addEventListener('click', () => {
+    if (state.tbStage === 'await') { state.tbStage = 'textbook'; resetPaddleConfirm(); hideTbOverlay(); }
+    else if (state.tbStage === 'done') { state.tbStage = 'student'; _tbStudent = null; resetPaddleConfirm(); hideTbOverlay(); }
+  });
   $('#pairManual').addEventListener('click', () => {
     const v = prompt('Enter the room code shown on the receiver:');
     if (v == null) return;

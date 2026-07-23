@@ -21,6 +21,7 @@ import json
 import os
 import queue
 import random
+import re
 import ssl
 import sys
 import threading
@@ -51,10 +52,11 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.72"   # shared version across the Mac app + web app
+VERSION        = "14.73"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
+TB_LOG_PATH    = Path.home() / "Documents" / "ANUSAScanner_textbooks.csv"
 
 
 def _resource(name):
@@ -129,6 +131,11 @@ class Bridge:
         (name / registered / already) instantly, with no round-trip. `rows` = [[uid,name,ticked]]."""
         self._publish({"t": "roster", "r": rows})
 
+    def send_mode(self, mode):
+        """Tell the phones which mode the receiver is in, so they run the right scan flow
+        (e.g. the two-stage student→textbook flow in Textbook Library mode)."""
+        self._publish({"t": "mode", "mode": mode})
+
     def _run(self, broker_url: str):
         u      = urlparse(broker_url)
         host   = u.hostname or "broker.emqx.io"
@@ -173,7 +180,7 @@ class Bridge:
             if t == "hello":                       # a phone joined this room → paired
                 self._q.put(("paired", data.get("dev")))
                 return
-            if t != "scan":
+            if t not in ("scan", "tbpair"):
                 return
             pair = (data.get("dev"), data.get("seq"))
             if pair in self._seen_s:
@@ -182,6 +189,9 @@ class Bridge:
                 self._seen_s.discard(self._seen.popleft())
             self._seen.append(pair)
             self._seen_s.add(pair)
+            if t == "tbpair":                      # Textbook Library: a student↔textbook pairing
+                self._q.put(("tbpair", data))
+                return
             sid = str(data.get("id", "")).strip()
             if not sid.isdigit():
                 return
@@ -214,6 +224,7 @@ class Api:
         self.sheet_ready = False
         self._kb = None              # lazy pynput (Controller, Key)
         self._hist = []              # [{ts,id,result,dev,seq}]
+        self._tblog = []             # Textbook Library: [{ts,student,code}]
 
     # called once the window + GUI loop are up
     def attach(self, window):
@@ -276,8 +287,11 @@ class Api:
             self._handle_scan(ev[1], ev[2])
         elif kind == "checkin":
             self._checkin_result(ev[1], ev[2], ev[3], ev[4])
+        elif kind == "tbpair":
+            self._tbpair(ev[1])
         elif kind == "paired":
             self._emit("paired", {"dev": ev[1]})
+            self.bridge.send_mode(self.mode)   # tell the (re)joined phone the current mode
             self._push_roster()   # a phone (re)joined → give it the roster for instant results
 
     # ── scan handling ────────────────────────────────────────────────────────
@@ -424,6 +438,29 @@ class Api:
         except Exception:
             pass
 
+    # ── Textbook Library ─────────────────────────────────────────────────────
+    def _tbpair(self, data):
+        """A phone paired a student number with a textbook code. Log the pairing and show it."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        student = re.sub(r"\D", "", str(data.get("student", "")))
+        code = str(data.get("code", "")).strip().upper()
+        if not (student and code):
+            return
+        self._tblog.insert(0, {"ts": ts, "student": student, "code": code})
+        self._log_pair_csv(ts, student, code)
+        self._emit("tbpair", {"student": student, "code": code, "ts": ts})
+
+    def _log_pair_csv(self, ts, student, code):
+        try:
+            needs_header = not TB_LOG_PATH.exists()
+            with open(TB_LOG_PATH, "a", newline="") as f:
+                w = csv.writer(f)
+                if needs_header:
+                    w.writerow(["timestamp", "student", "textbook"])
+                w.writerow([ts, student, code])
+        except Exception:
+            pass
+
     # ── JS-callable methods ──────────────────────────────────────────────────
     def get_state(self):
         self._emit("version", {"v": VERSION})
@@ -434,9 +471,10 @@ class Api:
         self.focused = bool(f)
 
     def set_mode(self, m):
-        self.mode = m if m in ("keys", "sheet") else "keys"
-        # Sheet mode → give phones the roster for instant results; keystroke mode → clear it
-        # so a stale roster can't make phones show sheet-style results.
+        self.mode = m if m in ("keys", "sheet", "textbook") else "keys"
+        self.bridge.send_mode(self.mode)   # tell the phones which scan flow to run
+        # Sheet mode → give phones the roster for instant results; other modes → clear it so a
+        # stale roster can't make phones show sheet-style results.
         if self.mode == "sheet":
             self._push_roster()
         else:

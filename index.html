@@ -148,6 +148,25 @@
   .go:active{transform:scale(.98)}
   .gate .err{color:var(--bad);font-size:12px;max-width:40ch;display:none}
 
+  /* Textbook Library prompt / complete overlay */
+  .tb-overlay{
+    position:fixed;inset:0;z-index:9998;display:none;
+    align-items:center;justify-content:center;padding:24px;
+    background:rgba(20,22,28,.82);backdrop-filter:blur(4px);
+  }
+  .tb-card{
+    background:var(--deck);border-radius:20px;padding:30px 26px;max-width:340px;width:100%;
+    text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px;
+    box-shadow:0 12px 40px rgba(0,0,0,.4);
+  }
+  .tb-badge{
+    width:56px;height:56px;border-radius:50%;background:var(--ok-soft,#e6f6ee);color:var(--tick);
+    display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;margin-bottom:4px;
+  }
+  .tb-title{font-size:20px;font-weight:700;color:var(--text)}
+  .tb-sub{font-family:var(--mono);font-size:16px;color:var(--muted);letter-spacing:.04em}
+  .tb-card .go{margin-top:8px;width:100%}
+
   /* ── readout deck ────────────────────────── */
   .deck{
     background:var(--deck);border-top:1px solid var(--line);
@@ -263,6 +282,15 @@
   <div class="num"></div>
   <div class="who"></div>
 </div>
+<!-- Textbook Library two-stage prompt/complete overlay -->
+<div class="tb-overlay" id="tbOverlay" style="display:none">
+  <div class="tb-card">
+    <div class="tb-badge">✓</div>
+    <div class="tb-title" id="tbTitle"></div>
+    <div class="tb-sub" id="tbSub"></div>
+    <button class="go" id="tbBtn"></button>
+  </div>
+</div>
 <div class="app">
 
   <header>
@@ -349,7 +377,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.72</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.73</p>
 </div>
 
 <div class="toast" id="toast"></div>

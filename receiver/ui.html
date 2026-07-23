@@ -201,7 +201,7 @@
     <div class="spacer"></div>
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.72</div>
+    <div class="ver" id="ver">v14.73</div>
   </header>
 
   <main>
@@ -225,6 +225,7 @@
         <div class="seg" id="modeSeg">
           <button data-mode="keys" class="on">Type keystrokes</button>
           <button data-mode="sheet">Union Pantry</button>
+          <button data-mode="textbook">Textbook Library</button>
         </div>
         <div id="pantrySummary" style="display:none">
           <div class="divider"></div>
@@ -352,7 +353,25 @@ const ui = {
     this.mode = m;
     document.querySelectorAll('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode===m));
     $('#pantrySummary').style.display = m==='sheet' ? 'block' : 'none';
+    if(m!=='sheet'){ const a=$('#attend'); if(a) a.style.display='none'; }   // attendance is sheet-only
+    const hh = document.querySelector('.history .head h3');
+    if(hh) hh.textContent = m==='textbook' ? 'Borrowed textbooks' : 'Recent scans';
     this.updateBanner();
+  },
+  setPair(student, code){   // Textbook Library: latest student↔textbook pairing in the monitor
+    $('#stateChip').className = 'state-chip ok';
+    $('#stateChip').textContent = 'BORROWED';
+    const n = $('#num'); n.textContent = code; n.className = 'num';
+    $('#who').textContent = 'u'+student;
+  },
+  addPairRow(student, code, ts){
+    const ul = $('#histList');
+    if(this.history.length===0) ul.innerHTML='';
+    this.history.unshift({student, code, ts});
+    const li = document.createElement('li'); li.className='hrow';
+    li.innerHTML = `<span class="t">${ts}</span><span class="id">u${student} → ${code}</span>`;
+    ul.insertBefore(li, ul.firstChild);
+    while(ul.children.length>60) ul.removeChild(ul.lastChild);
   },
   updateBanner(){ $('#banner').classList.toggle('show', this.mode==='keys' && this._focused); },
   setState(kind, word, id, name){
@@ -437,6 +456,7 @@ window.uiEvent = (type, p={}) => {
   else if(type==='reset'){ ui.doReset(); }
   else if(type==='version'){ $('#ver').textContent='v'+p.v; }
   else if(type==='mode'){ ui.setMode(p.mode); }   // adopt the backend's mode (source of truth)
+  else if(type==='tbpair'){ ui.setPair(p.student, p.code); ui.addPairRow(p.student, p.code, p.ts); }
 };
 
 /* UI → Python */
