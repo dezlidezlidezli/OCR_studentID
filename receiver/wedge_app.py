@@ -51,7 +51,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.69"   # shared version across the Mac app + web app
+VERSION        = "14.70"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -568,16 +568,24 @@ class Api:
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def _selftest():
-    """Headless check that every backend dep imports + builds in this (possibly
-    frozen) build. Exits 0 on success. Needs a cached Google token."""
+    """Headless check that every backend dep imports in this (possibly frozen) build.
+    Exits 0 on success. Auth state is NOT required — the cached token expires every 7 days
+    in Testing mode, and that must not fail a bundle check."""
     try:
-        svc = sheets.build_service(interactive=False)
-        svc.spreadsheets()
+        from google.auth.transport.requests import Request  # noqa: F401
+        from google_auth_oauthlib.flow import InstalledAppFlow  # noqa: F401
+        from googleapiclient.discovery import build  # noqa: F401
         import qrcode  # noqa: F401
         from qrcode.image.styledpil import StyledPilImage  # noqa: F401
         from qrcode.image.styles.moduledrawers import RoundedModuleDrawer  # noqa: F401
         import webview as _wv  # noqa: F401
-        print("SELFTEST OK: google + sheets + qrcode + pywebview")
+        # Exercise the service build too, but a missing/expired token is fine here.
+        try:
+            sheets.build_service(interactive=False).spreadsheets()
+            auth = "signed in"
+        except Exception as e:
+            auth = f"no valid session ({type(e).__name__}) — ok"
+        print(f"SELFTEST OK: google + sheets + qrcode + pywebview [{auth}]")
         return 0
     except Exception as e:
         print(f"SELFTEST FAIL: {type(e).__name__}: {e}")
