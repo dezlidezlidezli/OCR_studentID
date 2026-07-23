@@ -102,18 +102,20 @@ def resolve_col(headers, spec):
     s = (spec or "").strip()
     if not s:
         raise ValueError("empty column")
+    low = s.lower()
+    # An exact header-name match wins first, so a header literally named "ID" (which also
+    # looks like a spreadsheet column letter) resolves to that column, not to column "ID".
+    for i, h in enumerate(headers):
+        if str(h).strip().lower() == low:
+            return i
     if re.fullmatch(r"[A-Za-z]{1,2}", s):
         return letter_index(s)
-    if s.lower() == "today":
+    if low == "today":
         wants = {t.lower() for t in today_headers()}
         for i, h in enumerate(headers):
             if str(h).strip().lower() in wants:
                 return i
         raise ValueError("no header matches today's date")
-    low = s.lower()
-    for i, h in enumerate(headers):
-        if str(h).strip().lower() == low:
-            return i
     for i, h in enumerate(headers):
         if low in str(h).strip().lower():
             return i
@@ -202,6 +204,7 @@ class SheetSession:
         self.tab = None
         self.headers = []
         self.values = []
+        self.header_i = 0     # which row of self.values holds the column names (auto-detected)
         self.id_i = self.tick_i = self.name_i = None
 
     def open(self, url, tab=None):
@@ -222,7 +225,7 @@ class SheetSession:
                 "tab": self.tab,
                 "tabs": [t["title"] for t in tabs],
                 "headers": list(self.headers),
-                "rows": max(0, len(self.values) - 1),
+                "rows": max(0, len(self.values) - (self.header_i + 1)),
             }
 
     def guess_columns(self):
@@ -233,7 +236,13 @@ class SheetSession:
                 if any(p in hl for p in pats):
                     return h
             return None
-        id_g = find(["uid", "student", "number"]) or (self.headers[0] if self.headers else None)
+        def find_exact(names):     # exact match — safe for short tokens like "id"
+            for h in self.headers:
+                if str(h).strip().lower() in names:
+                    return h
+            return None
+        id_g = (find(["uid", "student", "number"]) or find_exact({"id", "sid"})
+                or (self.headers[0] if self.headers else None))
         tick_g = None
         wants = {t.lower() for t in today_headers()}
         for h in self.headers:
@@ -329,7 +338,7 @@ class SheetSession:
             if self.id_i is None:
                 return out
             seen = set()
-            for r in range(1, len(self.values)):
+            for r in range(self.header_i + 1, len(self.values)):
                 uid = normalize(self._cell(r, self.id_i))
                 if not uid or uid in seen:
                     continue
@@ -346,7 +355,7 @@ class SheetSession:
             if self.id_i is None:
                 return []
             order, info = [], {}
-            for r in range(1, len(self.values)):
+            for r in range(self.header_i + 1, len(self.values)):
                 uid = normalize(self._cell(r, self.id_i))
                 if not uid:
                     continue
@@ -367,7 +376,7 @@ class SheetSession:
             if self.tick_i is None:
                 return {"present": 0, "total": 0}
             present = total = 0
-            for r in range(1, len(self.values)):
+            for r in range(self.header_i + 1, len(self.values)):
                 val = str(self._cell(r, self.tick_i)).strip().upper()
                 if val in ("TRUE", "FALSE"):
                     total += 1
@@ -381,7 +390,7 @@ class SheetSession:
         if not target or self.id_i is None:
             return out
         seen = set()
-        for r in range(1, len(self.values)):
+        for r in range(self.header_i + 1, len(self.values)):
             uid = normalize(self._cell(r, self.id_i))
             if len(uid) != len(target) or uid == target or uid in seen:
                 continue
@@ -399,10 +408,28 @@ class SheetSession:
     def _reload_locked(self):
         self.values = self.svc.spreadsheets().values().get(
             spreadsheetId=self.sid, range=f"'{self.tab}'").execute().get("values", [])
-        self.headers = self.values[0] if self.values else []
+        self.header_i = self._detect_header_row()
+        self.headers = self.values[self.header_i] if self.values else []
+
+    def _detect_header_row(self):
+        """The column names aren't always in row 1 — some sheets have a banner row above
+        them (e.g. a merged 'DO NOT EDIT'). Scan the first few rows and use the first that
+        looks like a header (has a name-ish or id-ish column); default to the first row."""
+        for i in range(min(len(self.values), 6)):
+            if self._looks_like_header(self.values[i]):
+                return i
+        return 0
+
+    @staticmethod
+    def _looks_like_header(cells):
+        low = [str(c).strip().lower() for c in (cells or [])]
+        has_id = any("uid" in c or "student" in c or "number" in c or c in ("id", "sid")
+                     for c in low)
+        has_name = any("name" in c for c in low)
+        return has_id or has_name
 
     def _find_all(self, target):
-        return [r for r in range(1, len(self.values))
+        return [r for r in range(self.header_i + 1, len(self.values))
                 if normalize(self._cell(r, self.id_i)) == target]
 
     @staticmethod
