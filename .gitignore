@@ -23,6 +23,7 @@ receiver/scans.csv
 # Demo data — kept local, not tracked
 demo_roster.csv
 
-# Google OAuth secrets — never commit
+# Google secrets — never commit
 receiver/credentials.json
 receiver/token.json
+receiver/service_account.json

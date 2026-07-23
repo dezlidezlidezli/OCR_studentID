@@ -52,7 +52,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.75"   # shared version across the Mac app + web app
+VERSION        = "14.76"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -505,7 +505,7 @@ class Api:
         try:
             svc = sheets.build_service(interactive=interactive)
             self.sheet = sheets.SheetSession(svc)
-            self._emit("signed_in", {"ok": True})
+            self._emit("signed_in", {"ok": True, "sa": sheets.has_service_account()})
         except Exception as e:
             if interactive:
                 self._emit("sheet_status", {"text": f"sign-in failed: {str(e)[:40]}", "kind": "bad"})

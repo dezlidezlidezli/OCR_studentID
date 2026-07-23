@@ -1,7 +1,45 @@
-# Google Sheets check-in — OAuth setup (one-time)
+# Google Sheets check-in — setup (one-time)
 
-This proves the OAuth → Sheets → tick path before it's built into the app. You do
-the Google Cloud steps once; after that the app just shows **Sign in with Google**.
+Union Pantry mode writes to a Google Sheet. There are two ways to connect. **Keystroke and
+Textbook Library modes need none of this** — they don't touch Google.
+
+- **Service account (recommended for sharing the app)** — no one ever signs in. You bundle one
+  key; each roster sheet is just *shared* with the service account's email. No sign-in, no
+  7-day token expiry, no "unverified app" warning, no verification — ever. Best when handing
+  the app to others.
+- **OAuth "Sign in with Google"** — each operator signs in with their own Google account. Fine
+  for personal use, but in a personal (non-Workspace) project it's stuck in **Testing** mode:
+  logins re-prompt every 7 days and show an "unverified app" screen. See §OAuth below.
+
+The app auto-detects which to use: if a bundled `service_account.json` is present it uses the
+service account; otherwise it falls back to OAuth.
+
+## Service account (recommended, ~5 min once)
+
+1. <https://console.cloud.google.com/> → your project → **APIs & Services → Library →**
+   **Google Sheets API → Enable** (if it isn't already).
+2. **IAM & Admin → Service Accounts → Create service account.** Name it (e.g.
+   `anusa-scanner-sheets`). **Skip** the optional roles/access steps → **Done**.
+3. Open the new service account → **Keys → Add key → Create new key → JSON → Create.** A JSON
+   file downloads.
+4. Rename it to **`service_account.json`** and put it in `receiver/` (next to `build_mac.sh`).
+   It's git-ignored — never commit it.
+5. Copy the service account's **email** — it looks like
+   `anusa-scanner-sheets@your-project.iam.gserviceaccount.com`.
+6. **For each roster sheet:** open it → **Share** → paste that email → set **Editor** → Send.
+   (Uncheck "Notify people" — it's not a real inbox.)
+7. Build: `bash build_mac.sh` (it bundles the key). Launch — under Union Pantry it shows
+   **✓ Service account**; no sign-in button. Paste a shared sheet's URL and go.
+
+**Security:** the key is bundled inside the distributed `.app` and can be extracted. Its reach
+is limited to sheets you've shared with this service account — so use a **dedicated** service
+account for this, share only event rosters with it, and if the key ever leaks, rotate it
+(Service account → Keys → delete the old one, create a new one, rebuild). The built `.app` and
+the key are git-ignored, so they're never committed.
+
+---
+
+## OAuth (alternative — per-user sign-in)
 
 ## 1. Create an OAuth client (~5 min, once)
 

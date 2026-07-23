@@ -24,12 +24,18 @@ python3 make_icon.py
 # Google" (the Desktop client_id/secret is not confidential for installed apps).
 # The token is written to ~/Library/Application Support/ANUSA Scanner at runtime.
 CREDS_FLAG=()
+if [ -f service_account.json ]; then
+    # Preferred for sharing: authenticate as a service account — recipients never sign in.
+    CREDS_FLAG+=(--add-data "service_account.json:.")
+    echo "→ Bundling service_account.json (service-account auth — no user sign-in)"
+fi
 if [ -f credentials.json ]; then
-    CREDS_FLAG=(--add-data "credentials.json:.")
-    echo "→ Bundling credentials.json"
-else
-    echo "⚠  no credentials.json — operators must place one in"
-    echo "   ~/Library/Application Support/ANUSA Scanner/ (see SHEETS_SETUP.md)"
+    CREDS_FLAG+=(--add-data "credentials.json:.")
+    echo "→ Bundling credentials.json (OAuth fallback)"
+fi
+if [ ${#CREDS_FLAG[@]} -eq 0 ]; then
+    echo "⚠  no service_account.json or credentials.json — Union Pantry mode needs one"
+    echo "   (see SHEETS_SETUP.md); Keystroke + Textbook Library modes work without it."
 fi
 
 echo "→ Building .app bundle…"

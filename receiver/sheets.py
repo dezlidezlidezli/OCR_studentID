@@ -53,6 +53,23 @@ def creds_file():
 def token_file():
     return str(_app_dir() / "token.json")
 
+
+def service_account_file():
+    """A service-account key, if present — the app then authenticates AS the service account
+    (no user sign-in, no browser, no token, no expiry; the roster sheet is just shared with the
+    service account's email). A user-placed key wins, else the copy bundled in the app. Returns
+    None when there isn't one, in which case sign-in falls back to the OAuth flow."""
+    user = _app_dir() / "service_account.json"
+    if user.exists():
+        return str(user)
+    bundle = getattr(sys, "_MEIPASS", HERE)
+    p = os.path.join(bundle, "service_account.json")
+    return p if os.path.exists(p) else None
+
+
+def has_service_account():
+    return service_account_file() is not None
+
 TRUE_SET = {"TRUE", "1", "YES", "Y", "X", "✓", "TICK", "PRESENT"}
 
 
@@ -132,7 +149,10 @@ def _load_cached():
 
 
 def token_available():
-    """True if a cached token exists that is valid or refreshable (no browser)."""
+    """True if a Sheets service can be built without a browser — a bundled service-account
+    key, or a cached OAuth token that's valid/refreshable."""
+    if service_account_file():
+        return True
     try:
         creds = _load_cached()
         return bool(creds and (creds.valid or (creds.expired and creds.refresh_token)))
@@ -154,11 +174,18 @@ def _interactive_signin():
 
 
 def build_service(interactive=False):
-    """Return a Sheets service. interactive=True may open a browser to sign in;
-    interactive=False uses the cached token (refreshing if needed) or raises."""
-    from google.auth.transport.requests import Request
+    """Return a Sheets service. A bundled service-account key is used if present (no sign-in);
+    otherwise interactive=True may open a browser to sign in, and interactive=False uses the
+    cached OAuth token (refreshing if needed) or raises."""
     from googleapiclient.discovery import build
 
+    sa = service_account_file()
+    if sa:
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_file(sa, scopes=SCOPES)
+        return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+    from google.auth.transport.requests import Request
     creds = _load_cached()
     if creds and creds.valid:
         pass
