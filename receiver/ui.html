@@ -201,7 +201,7 @@
     <div class="spacer"></div>
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.76</div>
+    <div class="ver" id="ver">v14.77</div>
   </header>
 
   <main>
@@ -297,9 +297,15 @@
   <div class="modal pantry-modal">
     <h2>Union&nbsp;Pantry check-in</h2>
     <p>Sign in, paste the roster sheet, then choose the columns to check students in.</p>
-    <div class="row" id="signedRow" style="justify-content:space-between;margin-bottom:6px">
-      <button class="btn ghost" id="signinBtn">Sign in with Google</button>
+    <div class="row" id="signedRow" style="justify-content:space-between;margin-bottom:6px;gap:8px">
+      <div class="row" id="signBtns" style="gap:8px">
+        <button class="btn ghost" id="signinBtn">Sign in with Google</button>
+        <button class="btn ghost" id="saBtn" title="Use a service-account JSON key — no sign-in, no expiry">Use service account</button>
+      </div>
       <span class="who" id="signedWho"></span>
+    </div>
+    <div id="saEmail" style="display:none;font-size:11.5px;color:var(--muted);margin:-2px 0 8px">
+      Share roster sheets with <b id="saEmailTxt" style="color:var(--text)"></b> · <a href="#" id="saClear" style="color:var(--blue)">remove</a>
     </div>
     <label class="fld" style="margin-top:10px">SHEET URL</label>
     <div class="row">
@@ -444,12 +450,14 @@ window.uiEvent = (type, p={}) => {
   else if(type==='fuzzy'){ showFuzzy(p); }
   else if(type==='signed_in'){
     ui.signedIn=p.ok;
-    // With a service account there's no user sign-in — hide the button and say so.
-    $('#signinBtn').style.display = (p.ok || p.sa) ? 'none' : '';
+    // With a service account there's no user sign-in — hide the buttons and say so.
+    $('#signBtns').style.display = p.ok ? 'none' : 'flex';
     const who=$('#signedWho');
     who.textContent = p.ok ? (p.sa ? '✓  Service account' : '✓  Google account — OAuth valid') : '';
     who.style.display = p.ok ? 'inline-flex' : 'none';
+    if(!(p.ok && p.sa)) $('#saEmail').style.display='none';
   }
+  else if(type==='sa_email'){ $('#saEmailTxt').textContent=p.email||''; $('#saEmail').style.display='block'; }
   else if(type==='sheet_loaded'){ ui.fillCols(p.headers, p.guess); ui.setSheetStat(p.tab+' · '+p.rows+' rows', 'ok'); }
   else if(type==='sheet_status'){ ui.setSheetStat(p.text, p.kind); ui.sheetReady = p.kind==='ok'; }
   else if(type==='show_pairing'){ $('#pairQr').src=p.img; $('#pairRoom').textContent='room '+p.room; $('#pairView').classList.remove('hidden'); }
@@ -481,6 +489,8 @@ $('#pantryReload').onclick = () => { ui.setSheetStat('re-syncing…','warn'); ap
 $('#pantryDone').onclick = closePantry;
 $('#pantryBack').onclick = e => { if(e.target.id==='pantryBack') closePantry(); };
 $('#signinBtn').onclick = () => { $('#signedWho').textContent='opening browser…'; api().sign_in(); };
+$('#saBtn').onclick = () => api().use_service_account();
+$('#saClear').onclick = (e) => { e.preventDefault(); $('#saEmail').style.display='none'; api().clear_service_account(); };
 $('#loadBtn').onclick = () => { ui.setSheetStat('loading…','warn'); api().load_sheet($('#sheetUrl').value.trim()); };
 $('#syncBtn').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
 ['#colId','#colTick','#colName'].forEach(s => $(s).onchange = () => ui.applyCols());
@@ -565,6 +575,8 @@ const MOCK = {
   set_mode:()=>{}, set_columns:()=>mockSheetData(),
   sync:()=>setTimeout(()=>{ui.setSheetStat('re-synced · 137 rows','ok');mockSheetData();},400),
   sign_in:()=>setTimeout(()=>window.uiEvent('signed_in',{ok:true}),500),
+  use_service_account:()=>setTimeout(()=>{window.uiEvent('sa_email',{email:'anusa-scanner@my-proj.iam.gserviceaccount.com'});window.uiEvent('signed_in',{ok:true,sa:true});},300),
+  clear_service_account:()=>window.uiEvent('signed_in',{ok:false}),
   load_sheet:()=>setTimeout(()=>window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,
       headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:['UID:','Attendence','Full Name:']}),500),
   manual:(v)=>{

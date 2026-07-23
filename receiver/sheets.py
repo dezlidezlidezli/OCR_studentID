@@ -70,6 +70,11 @@ def service_account_file():
 def has_service_account():
     return service_account_file() is not None
 
+
+def service_account_dest():
+    """Where a UI-loaded service-account key is written (the writable per-user support dir)."""
+    return str(_app_dir() / "service_account.json")
+
 TRUE_SET = {"TRUE", "1", "YES", "Y", "X", "✓", "TICK", "PRESENT"}
 
 

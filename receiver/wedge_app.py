@@ -52,7 +52,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.76"   # shared version across the Mac app + web app
+VERSION        = "14.77"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -500,6 +500,41 @@ class Api:
 
     def sign_in(self):
         threading.Thread(target=lambda: self._do_sign_in(True), daemon=True).start()
+
+    def use_service_account(self):
+        """Pick a service-account JSON key → switch Union Pantry to service-account auth (no
+        user sign-in, no token expiry). The key is copied into the app's support dir; roster
+        sheets just need to be shared with the key's client_email."""
+        try:
+            sel = self.window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False, file_types=("JSON key (*.json)",))
+        except Exception:
+            sel = None
+        if not sel:
+            return
+        path = sel[0] if isinstance(sel, (list, tuple)) else sel
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            if data.get("type") != "service_account" or not data.get("client_email"):
+                self._emit("sheet_status", {"text": "not a service-account JSON key", "kind": "bad"})
+                return
+            import shutil
+            shutil.copyfile(path, sheets.service_account_dest())
+        except Exception as e:
+            self._emit("sheet_status", {"text": f"couldn't load key: {str(e)[:40]}", "kind": "bad"})
+            return
+        self._emit("sa_email", {"email": data.get("client_email", "")})
+        self._do_sign_in(False)   # picks up the new key → builds the service, signed_in{sa:true}
+
+    def clear_service_account(self):
+        """Remove a UI-loaded service-account key (revert to Google sign-in)."""
+        try:
+            os.remove(sheets.service_account_dest())
+        except FileNotFoundError:
+            pass
+        self.sheet = None
+        self._emit("signed_in", {"ok": False, "sa": False})
 
     def _do_sign_in(self, interactive):
         try:
