@@ -228,7 +228,7 @@
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="settingsBtn" title="Settings">⚙ Settings<span class="badge" id="settingsBadge"></span></button>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver" style="display:none">v14.83</div>
+    <div class="ver" id="ver" style="display:none">v14.84</div>
   </header>
 
   <main>
@@ -648,7 +648,7 @@ window.uiEvent = (type, p={}) => {
   else if(type==='sheet_status'){ ui.setSheetStat(p.text, p.kind); ui.sheetReady = p.kind==='ok'; }
   else if(type==='show_pairing'){ ui._setupPassed=true; $('#setupGate').classList.add('hidden');
     $('#pairQr').src=p.img; $('#pairRoom').textContent='room '+p.room; $('#pairView').classList.remove('hidden'); }
-  else if(type==='paired'){ $('#pairView').classList.add('hidden'); }
+  else if(type==='paired'){ $('#pairView').classList.add('hidden'); $('#qrBack').classList.remove('show'); }   // a phone said hello → close both the full-screen pairing view AND the "show QR" popup
   else if(type==='reset'){ ui.doReset(); }
   else if(type==='version'){ $('#ver').textContent='v'+p.v; }
   else if(type==='mode'){ ui.setMode(p.mode); }   // adopt the backend's mode (source of truth)

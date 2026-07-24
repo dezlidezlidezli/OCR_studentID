@@ -972,6 +972,7 @@ function refreshChrome() {
 // says which code we're scanning for right now.
 function updateHint() {
   const h = $('#hint'); if (!h) return;
+  h.classList.remove('qr-hint');   // not pairing here — drop the pairing badge style
   let txt = '';
   if (state.rxMode === 'textbook')
     txt = (state.tbStage === 'textbook') ? 'Scanning for textbook' : 'Scanning for student card';
@@ -1016,6 +1017,9 @@ function scanPairingQR() {
   const ctx = cv.getContext('2d', { willReadFrequently: true });
   setReadout('', 'point at the receiver QR…', '');
   $('#pairManual').style.display = 'block';
+  $('#reticle').classList.add('qr');                 // square frame while hunting for the QR
+  const hint = $('#hint');
+  hint.textContent = 'Looking for QR code'; hint.classList.add('qr-hint');
   return new Promise((resolve) => {
     state._pairResolve = resolve;
     (function tick() {
@@ -1041,6 +1045,8 @@ function finishPair(room) {
   state._pairResolve = null;
   if (state._pairTimer) { clearTimeout(state._pairTimer); state._pairTimer = null; }
   $('#pairManual').style.display = 'none';
+  $('#reticle').classList.remove('qr');              // back to the ID-card frame for scanning
+  const hint = $('#hint'); hint.classList.remove('qr-hint'); hint.textContent = '';
   if (r) r(room);
 }
 

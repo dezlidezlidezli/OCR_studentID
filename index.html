@@ -102,6 +102,21 @@
     text-align:center;font-size:13px;font-weight:600;color:rgba(255,255,255,.92);letter-spacing:.06em;
     text-shadow:0 1px 4px rgba(0,0,0,.6);pointer-events:none;
   }
+  /* pairing: square reticle + a big obvious "looking for QR" badge */
+  .reticle.qr{aspect-ratio:1/1;width:min(70vw,300px)}
+  .hint.qr-hint{
+    top:calc(47% + min(35vw,150px) + 20px);
+    left:50%;right:auto;transform:translateX(-50%);width:max-content;max-width:86vw;
+    display:flex;align-items:center;gap:9px;
+    font-size:15px;font-weight:700;color:#fff;letter-spacing:.03em;text-shadow:none;
+    background:rgba(59,79,214,.94);border-radius:999px;padding:10px 18px;
+    box-shadow:0 8px 24px rgba(0,0,0,.4);
+  }
+  .hint.qr-hint::before{
+    content:'';width:9px;height:9px;border-radius:50%;background:#fff;flex:none;
+    animation:qrpulse 1s ease-in-out infinite;
+  }
+  @keyframes qrpulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
   #pairManual{position:absolute;left:50%;bottom:26px;transform:translateX(-50%);
     background:rgba(16,20,24,.62);color:#fff;border:1px solid rgba(255,255,255,.32);
     border-radius:11px;padding:10px 18px;font-size:13.5px;font-weight:600;z-index:7;
@@ -350,7 +365,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.83</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.84</p>
 </div>
 
 <div class="toast" id="toast"></div>
