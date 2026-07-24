@@ -13,7 +13,7 @@ echo ""
 # ── 1. Install build deps ─────────────────────────────────────────────────────
 echo "→ Installing dependencies…"
 python3 -m pip install --quiet paho-mqtt cryptography pynput pyinstaller pillow qrcode pywebview \
-    google-api-python-client google-auth-oauthlib google-auth-httplib2
+    google-api-python-client google-auth-oauthlib google-auth-httplib2 certifi
 
 # ── 2. App icon ───────────────────────────────────────────────────────────────
 echo "→ Generating app icon…"
@@ -45,6 +45,7 @@ pyinstaller \
     --collect-submodules google.oauth2 \
     --collect-submodules qrcode \
     --collect-all webview \
+    --collect-all certifi \
     --hidden-import google_auth_httplib2 \
     --hidden-import Quartz \
     --add-data "ui.html:." \

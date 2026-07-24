@@ -50,9 +50,23 @@ except ImportError:
 # lazily so the app still opens if a mode's deps aren't ready.
 import sheets
 
+# ── TLS certificates (frozen-app fix) ─────────────────────────────────────────
+# The Python baked into the build resolves OpenSSL's default CA bundle to the BUILD machine's
+# path (e.g. conda's ssl/cert.pem). That path doesn't exist on a recipient's Mac, so EVERY TLS
+# handshake — MQTT over wss:// and the Google Sheets API — fails with CERTIFICATE_VERIFY_FAILED.
+# Point OpenSSL (and requests/httplib2) at certifi's portable CA bundle, which ships inside the
+# .app. Must run before any TLS connection is opened, so do it at import time.
+try:
+    import certifi
+    CA_BUNDLE = certifi.where()
+    os.environ["SSL_CERT_FILE"] = CA_BUNDLE
+    os.environ["REQUESTS_CA_BUNDLE"] = CA_BUNDLE
+except Exception:
+    CA_BUNDLE = None
+
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.90"   # shared version across the Mac app + web app
+VERSION        = "14.91"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -161,7 +175,12 @@ class Bridge:
 
         c.ws_set_options(path=path)
         if tls:
-            c.tls_set(cert_reqs=ssl.CERT_REQUIRED)
+            # Use certifi's bundled CA roots explicitly — the frozen app's default CA path points
+            # at the build machine and is missing on a recipient's Mac (CERTIFICATE_VERIFY_FAILED).
+            if CA_BUNDLE:
+                c.tls_set(ca_certs=CA_BUNDLE, cert_reqs=ssl.CERT_REQUIRED)
+            else:
+                c.tls_set(cert_reqs=ssl.CERT_REQUIRED)
         self._client = c
 
         def on_connect(client, userdata, flags, rc, props=None):
