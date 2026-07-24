@@ -55,6 +55,11 @@ const state = {
   _shown: {},          // seq → status shown locally, so the Mac's echo doesn't double-flash
   rxMode: null,        // receiver mode: null/'keys'/'sheet' = normal scan; 'textbook' = two-stage flow
   tbStage: null,       // Textbook Library flow: 'student' | 'await' | 'textbook' | 'done'
+  sessionActive: false,// a scan session is live (survives backgrounding) → auto-reboot on resume
+  _hiddenAt: 0,        // when the tab was last backgrounded (ms) — gauges how stale things are
+  _resuming: false,
+  rxSynced: false,     // received the receiver's mode/roster since connecting (setup handshake)
+  _syncResolve: null,
 };
 
 /* ────────────────────────── crypto ──────────────────────────── */
@@ -94,6 +99,7 @@ function setStatus(kind, txt) {
 async function connectBridge() {
   if (state.client) { try { state.client.end(true); } catch (e) {} state.client = null; }
   state.connected = false;
+  state.rxSynced = false;   // re-handshake with the receiver on every (re)connect
   state.key = await deriveKey(state.settings.room);
 
   if (state.settings.mode === 'clip') { setStatus('', 'clipboard mode'); return; }
@@ -128,8 +134,8 @@ async function connectBridge() {
         if (own) markHistory(msg.seq, 'typed', 'ok');
         return;
       }
-      if (msg.t === 'mode') { applyRxMode(msg.mode); return; }
-      if (msg.t === 'roster') { applyRoster(msg.r); return; }
+      if (msg.t === 'mode') { markRxSynced(); applyRxMode(msg.mode); return; }
+      if (msg.t === 'roster') { markRxSynced(); applyRoster(msg.r); return; }
       if (msg.t === 'checkin') {
         // Keep the local roster's tick state in sync with EVERY check-in (this phone AND any
         // other phone in the room), so a repeat scan correctly reads as "already".
@@ -167,6 +173,31 @@ async function sendHello() {
     const payload = await encryptJSON({ t: 'hello', dev: state.deviceId });
     state.client.publish(topicBase() + '/scan', payload, { qos: 1 });
   } catch (e) { /* not fatal */ }
+}
+
+// Setup handshake: the receiver answers a phone's hello with its current mode + roster. We
+// treat the first such reply as "synced", and hold the scan UI on a brief "syncing…" state
+// until it arrives — so the mode chip / hint / reticle paint correctly the FIRST time instead
+// of flashing from a default and then flipping when the mode message lands a moment later.
+function markRxSynced() {
+  state.rxSynced = true;
+  if (state._syncResolve) state._syncResolve();   // resolve the in-flight wait (idempotent)
+}
+function waitForRxSync(timeoutMs) {
+  if (state.settings.mode !== 'bridge' || state.rxSynced) return Promise.resolve();
+  setReadout('', 'syncing with receiver…', 'warn');
+  return new Promise((res) => {
+    // `finish` closes over THIS promise's resolver, so a stale fallback timer from an earlier
+    // wait can't resolve a later one — it just no-ops on its own already-done flag.
+    let done = false;
+    const finish = () => {
+      if (done) return; done = true;
+      if (state._syncResolve === finish) state._syncResolve = null;
+      res();
+    };
+    state._syncResolve = finish;
+    setTimeout(finish, timeoutMs);   // fallback so an older/quiet receiver never leaves us stuck
+  });
 }
 
 // ── result labels + phone-side roster cache ─────────────────────────────────────
@@ -408,9 +439,61 @@ async function requestWakeLock() {
   try { state.wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
 }
 function releaseWakeLock() { try { state.wakeLock && state.wakeLock.release(); } catch (e) {} state.wakeLock = null; }
+
+/* ── resume after the tab is backgrounded / frozen ──────────────────────────────
+   iOS suspends a backgrounded PWA: it mutes/ends the camera track and usually drops the
+   MQTT socket. Coming back, the old code left a frozen video + a possibly-dead relay, so
+   scanning silently stopped and people had to reload + re-pair. Instead, whenever we return
+   to a live scan session we auto-reboot exactly the parts that died — camera, relay, OCR —
+   and drop straight back into scanning. Silent by design (a brief "reconnecting…" only). */
+function cameraAlive() {
+  const v = $('#video');
+  return !!(state.track && state.track.readyState === 'live' && !state.track.muted
+            && v && v.videoWidth > 0 && !v.paused);
+}
+
+async function resumeSession() {
+  if (!state.sessionActive || state._resuming) return;
+  state._resuming = true;
+  const away = Date.now() - (state._hiddenAt || 0);
+  try {
+    // 1) Camera — rebuild the stream if the track died while backgrounded; else just un-pause.
+    if (!cameraAlive()) {
+      setReadout('', 'reconnecting…', 'warn');
+      try { stopCamera(); } catch (e) {}
+      await startCamera();
+    } else {
+      try { await $('#video').play(); } catch (e) {}
+      requestWakeLock();
+    }
+    // 2) Relay — after a real backgrounding (>8s) the WebSocket is almost always dead even if
+    //    the client still reads "connected", so force a clean reconnect (which re-sends hello,
+    //    re-pairing on the receiver). Quick app-switches keep the existing connection.
+    if (state.settings.mode === 'bridge' && (!state.connected || away > 8000)) {
+      connectBridge();
+    }
+    // 3) OCR normally survives in memory; reload only if it somehow didn't.
+    if (!state.paddleReady) { try { await loadPaddle(); } catch (e) {} }
+    // 4) Back to scanning.
+    if (!state.scanning) startScanning();
+  } catch (e) {
+    // Couldn't silently recover (e.g. camera permission lost) — show a tap-to-resume gate.
+    setReadout('', 'tap to resume', 'warn');
+    $('#goBtn').textContent = 'Resume scanning';
+    $('#gate').style.display = 'flex';
+  } finally {
+    state._resuming = false;
+  }
+}
+
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && state.scanning) requestWakeLock();
+  if (document.visibilityState === 'hidden') { state._hiddenAt = Date.now(); return; }
+  if (state.sessionActive) resumeSession();
+  else if (state.scanning) requestWakeLock();
 });
+// pageshow fires when the page is restored from the bfcache (a common iOS "came back" path
+// that doesn't always fire visibilitychange).
+window.addEventListener('pageshow', () => { if (state.sessionActive) resumeSession(); });
 
 /* ────────────────────────── OCR ─────────────────────────────── */
 
@@ -974,7 +1057,9 @@ async function onStart() {
     }
     if (!state.connected) connectBridge();
     await loadPaddle();
+    await waitForRxSync(1500);   // let the receiver confirm its mode so scan UI paints correctly
     startScanning();
+    state.sessionActive = true;   // resume auto-reboots camera/relay/OCR after backgrounding
   } catch (e) {
     stopCamera();
     $('#gate').style.display = 'flex';   // re-show the gate so the error (e.g. OCR download) is visible
@@ -988,6 +1073,7 @@ async function onStart() {
 }
 
 function onPause() {
+  state.sessionActive = false;   // deliberate pause — don't auto-reboot on the next foreground
   stopScanning();
   // turn the torch off before releasing the camera (saves battery)
   const tb = $('#torchBtn');
