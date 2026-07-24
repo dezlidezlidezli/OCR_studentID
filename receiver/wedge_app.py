@@ -52,7 +52,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.85"   # shared version across the Mac app + web app
+VERSION        = "14.86"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -573,10 +573,10 @@ class Api:
             self.start_pairing()
         return {"ok": True}
 
-    def remember_sheet(self, url, title):
+    def remember_sheet(self, url, title, tab=None):
         """Add the just-loaded sheet to the current mode's recently-used list and push it."""
         try:
-            sheets.remember_recent_sheet(self.mode, sheets.spreadsheet_id(url), title, url)
+            sheets.remember_recent_sheet(self.mode, sheets.spreadsheet_id(url), title, url, tab)
             self._emit("recent_sheets",
                        {"mode": self.mode, "list": sheets.recent_sheets(self.mode)})
         except Exception:
@@ -682,19 +682,35 @@ class Api:
         finally:
             self._emit_auth()   # keep the Settings panel's ready/not-ready state in sync
 
-    def load_sheet(self, url):
+    def load_sheet(self, url, tab=None):
         if not self.sheet:
             self._emit("sheet_status", {"text": "sign in first", "kind": "bad"})
             return
-        threading.Thread(target=self._do_load, args=(url,), daemon=True).start()
+        self._sheet_url = url
+        threading.Thread(target=self._do_load, args=(url, tab), daemon=True).start()
 
-    def _do_load(self, url):
+    def select_tab(self, tab):
+        """Switch to a different worksheet tab of the CURRENT sheet (same sheet, different day)."""
+        if not self.sheet or not getattr(self, "_sheet_url", None):
+            return
+        self.sheet_ready = False
+        threading.Thread(target=self._do_load, args=(self._sheet_url, tab), daemon=True).start()
+
+    def _do_load(self, url, tab=None):
         try:
-            info = self.sheet.open(url)
-            guess = self.sheet.guess_columns()
-            self.remember_sheet(url, info.get("title", ""))   # recently-used list (per mode)
-            self._emit("sheet_loaded", {"tab": info["tab"], "rows": info["rows"],
-                                       "headers": info["headers"], "guess": list(guess)})
+            sid = sheets.spreadsheet_id(url)
+            rec = sheets.recent_sheet_record(self.mode, sid)
+            if tab is None and rec and rec.get("tab"):
+                tab = rec.get("tab")               # reopen the tab this sheet was last used with
+            info = self.sheet.open(url, tab)
+            cur_tab = info["tab"]
+            self.remember_sheet(url, info.get("title", ""), cur_tab)   # recently-used (per mode)
+            # Reuse the columns previously chosen for THIS sheet+tab instead of re-guessing.
+            cached = sheets.recent_sheet_cols(self.mode, sid, cur_tab)
+            guess = cached if cached else list(self.sheet.guess_columns())
+            self._emit("sheet_loaded", {"tab": cur_tab, "tabs": info.get("tabs", []),
+                                       "rows": info["rows"], "headers": info["headers"],
+                                       "guess": guess, "cached": bool(cached)})
         except Exception as e:
             if self._sa_permission(e):
                 # Not shared with the service account — block set-up; the UI shows the email.
@@ -711,8 +727,11 @@ class Api:
             self.sheet.set_columns(id_col, tick_col,
                                    None if name_col in ("", "(none)") else name_col)
             self.sheet_ready = True
-            self._emit("sheet_status", {"text": f"ready · {self.sheet.tab} · {id_col} → {tick_col}",
-                                       "kind": "ok"})
+            # Cache this choice for the sheet+tab so a reload restores it (no re-guessing).
+            if self.sheet.sid and self.sheet.tab is not None:
+                sheets.remember_sheet_cols(self.mode, self.sheet.sid, self.sheet.tab,
+                                           [self.sheet.id_i, self.sheet.tick_i, self.sheet.name_i])
+            self._emit("sheet_status", {"text": "ready", "kind": "ok"})
             self._push_sheet_data()   # roster (for autofill) + attendance %
         except Exception as e:
             self.sheet_ready = False

@@ -20,22 +20,15 @@ echo "→ Generating app icon…"
 python3 make_icon.py
 
 # ── 3. PyInstaller ────────────────────────────────────────────────────────────
-# Bundle credentials.json into the app if present, so operators just "Sign in with
-# Google" (the Desktop client_id/secret is not confidential for installed apps).
-# The token is written to ~/Library/Application Support/ANUSA Scanner at runtime.
+# We do NOT embed any credential in the .app. Distribution is service-account only: the
+# service_account.json is shipped LOOSE in dist/ (below) and Install.command copies it into
+# ~/Library/Application Support/ANUSA Scanner on the recipient's Mac. credentials.json (the
+# OAuth Desktop client) is deliberately NOT bundled — OAuth is only for the developer, who
+# keeps their own credentials.json in Application Support.
 CREDS_FLAG=()
-if [ -f service_account.json ]; then
-    # Preferred for sharing: authenticate as a service account — recipients never sign in.
-    CREDS_FLAG+=(--add-data "service_account.json:.")
-    echo "→ Bundling service_account.json (service-account auth — no user sign-in)"
-fi
-if [ -f credentials.json ]; then
-    CREDS_FLAG+=(--add-data "credentials.json:.")
-    echo "→ Bundling credentials.json (OAuth fallback)"
-fi
-if [ ${#CREDS_FLAG[@]} -eq 0 ]; then
-    echo "⚠  no service_account.json or credentials.json — Union Pantry mode needs one"
-    echo "   (see SHEETS_SETUP.md); Keystroke + Textbook Library modes work without it."
+if [ ! -f service_account.json ]; then
+    echo "⚠  no service_account.json — Union Pantry needs it (see SHEETS_SETUP.md);"
+    echo "   Keystroke + Textbook Library modes work without it."
 fi
 
 echo "→ Building .app bundle…"

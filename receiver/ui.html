@@ -243,7 +243,7 @@
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="settingsBtn" title="Settings">⚙ Settings<span class="badge" id="settingsBadge"></span></button>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver" style="display:none">v14.85</div>
+    <div class="ver" id="ver" style="display:none">v14.86</div>
   </header>
 
   <main>
@@ -391,6 +391,11 @@
         <button class="btn primary" id="loadBtn">Load</button>
       </div>
     </div>
+    <div id="tabWrap" style="display:none">
+      <label class="fld" style="margin-top:10px">TAB (worksheet — e.g. the day)</label>
+      <select class="input" id="tabSelect"></select>
+    </div>
+    <div class="divider" id="tabDivider" style="display:none"></div>
     <div class="cols" style="margin-top:14px">
       <label>ID column</label><select class="input" id="colId"></select>
       <label>Tick column</label><select class="input" id="colTick"></select>
@@ -430,7 +435,7 @@
         <span class="chip" id="saChip"><span class="dot"></span><span id="saStat">no key loaded</span></span>
       </div>
       <div id="saEmail" style="display:none;font-size:12px;color:var(--muted);margin-top:10px;line-height:1.55">
-        Share roster sheets with:
+        Share Google Sheets with:
         <div class="row" style="gap:8px;margin-top:6px">
           <code id="saEmailTxt" style="flex:1;color:var(--text);font-family:var(--mono);font-size:12px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></code>
           <button class="btn ghost" id="saEmailCopy" style="padding:8px 12px;font-size:12px">Copy</button>
@@ -484,7 +489,7 @@ const api = () => (window.pywebview && window.pywebview.api) || MOCK;
 const ui = {
   connected:false, mode:'keys', signedIn:false, sheetReady:false, headers:[], history:[], roster:[],
   auth:{mode:'service_account', ready:false, saPresent:false, saEmail:''}, _authDismissed:false,
-  recent:{sheet:[], textbook:[]}, hasInitials:false, _setupPassed:false,
+  recent:{sheet:[], textbook:[]}, hasInitials:false, _setupPassed:false, _currentSheetUrl:'',
 
   setConn(on, room){
     this.connected = on;
@@ -617,10 +622,24 @@ const ui = {
     if(!wrap || !sel) return;
     if(!list.length){ wrap.style.display='none'; $('#urlWrap').style.display='block'; return; }
     wrap.style.display='block';
-    sel.innerHTML = '<option value="" disabled selected>Choose a recent sheet…</option>'
+    sel.innerHTML = '<option value="" disabled>Choose a recent sheet…</option>'
       + list.map(r => `<option value="${escapeHtml(r.url||'')}">${escapeHtml(r.title||'(untitled sheet)')}  ·  used ${escapeHtml(r.used||'')}</option>`).join('')
       + '<option value="__other__">Other… (paste a new link)</option>';
+    // Keep the picked sheet shown after it (re)loads — a re-render must NOT snap back to the
+    // "Choose a recent sheet…" placeholder. Select the loaded sheet if it's in the list.
+    const cur = this._currentSheetUrl;
+    if(cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+    else sel.selectedIndex = 0;   // placeholder
     $('#urlWrap').style.display='none';   // collapsed until "Other…" is chosen
+  },
+  setTabs(tabs, tab){
+    const wrap=$('#tabWrap'), div=$('#tabDivider'), sel=$('#tabSelect');
+    if(!wrap || !sel) return;
+    const list = tabs || [];
+    if(!list.length){ wrap.style.display='none'; div.style.display='none'; return; }
+    wrap.style.display='block'; div.style.display='block';
+    sel.innerHTML = list.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+    sel.value = (tab!=null && list.includes(tab)) ? tab : list[0];
   },
   showShareNeeded(email){
     $('#saShareEmail').textContent = email || '(load a service-account key in Settings first)';
@@ -668,7 +687,7 @@ window.uiEvent = (type, p={}) => {
   else if(type==='sa_email'){ $('#saEmailTxt').textContent=p.email||''; }
   else if(type==='user_info'){ $('#userInitials').value = p.initials||''; ui.setInitials(p.initials); }
   else if(type==='setup_required'){ ui._setupPassed=false; ui.renderSetupGate(); }
-  else if(type==='sheet_loaded'){ ui.hideShareNeeded(); ui.fillCols(p.headers, p.guess); ui.setSheetStat(p.tab+' · '+p.rows+' rows', 'ok'); }
+  else if(type==='sheet_loaded'){ ui.hideShareNeeded(); ui.setTabs(p.tabs, p.tab); ui.fillCols(p.headers, p.guess); }
   else if(type==='recent_sheets'){ ui.setRecent(p.mode, p.list); }
   else if(type==='sa_share_needed'){ ui.showShareNeeded(p.email); }
   else if(type==='sheet_status'){ ui.setSheetStat(p.text, p.kind); ui.sheetReady = p.kind==='ok'; }
@@ -746,14 +765,15 @@ $('#axRecheck').onclick = () => { $('#axStat').textContent='checking…'; $('#ax
 $('#signinBtn').onclick = () => { $('#oauthStat').textContent='opening browser…'; api().sign_in(); };
 $('#saBtn').onclick = () => api().use_service_account();
 $('#saClear').onclick = (e) => { e.preventDefault(); api().clear_service_account(); };
-$('#loadBtn').onclick = () => { ui.setSheetStat('loading…','warn'); api().load_sheet($('#sheetUrl').value.trim()); };
+$('#loadBtn').onclick = () => { const u=$('#sheetUrl').value.trim(); ui._currentSheetUrl=u; ui.setSheetStat('loading…','warn'); api().load_sheet(u); };
 $('#recentSheets').onchange = () => {
   const v = $('#recentSheets').value;
   if(v==='__other__'){ $('#urlWrap').style.display='block'; $('#sheetUrl').value=''; $('#sheetUrl').focus(); return; }
   if(!v) return;
-  $('#sheetUrl').value = v;
+  $('#sheetUrl').value = v; ui._currentSheetUrl = v;   // remember the pick so a re-render keeps it
   if(!$('#loadBtn').disabled){ ui.setSheetStat('loading…','warn'); api().load_sheet(v); }
 };
+$('#tabSelect').onchange = () => { ui.setSheetStat('loading…','warn'); api().select_tab($('#tabSelect').value); };
 function copyText(text, btn){
   if(!navigator.clipboard) return;
   navigator.clipboard.writeText(text).then(()=>{
@@ -842,7 +862,7 @@ function mockSheetData(){
 const MOCK = {
   connect:(r)=>window.uiEvent('status',{kind:'ok',room:r}),
   disconnect:()=>window.uiEvent('status',{kind:'off'}),
-  set_mode:()=>{}, set_columns:()=>mockSheetData(),
+  set_mode:()=>{}, set_columns:()=>{ mockSheetData(); window.uiEvent('sheet_status',{text:'ready',kind:'ok'}); },
   sync:()=>setTimeout(()=>{ui.setSheetStat('re-synced · 137 rows','ok');mockSheetData();},400),
   _saEmail:'anusa-scanner@my-proj.iam.gserviceaccount.com',
   set_auth_mode:(m)=>setTimeout(()=>{
@@ -859,19 +879,23 @@ const MOCK = {
   set_user_initials:()=>{}, finish_setup:async()=>({ok:true}),
   accessibility_status:()=>setTimeout(()=>window.uiEvent('accessibility',{mac:true,trusted:false}),150),
   open_accessibility_settings:()=>{},
-  _recent:[],
-  load_sheet:(u)=>setTimeout(()=>{
+  _recent:[], _tabs:['Monday','Tuesday','Wednesday','Thursday','Friday'], _curTab:'Monday',
+  load_sheet:(u, tab)=>setTimeout(()=>{
     if(String(u).includes('denied')){   // preview the "not shared" flow
       window.uiEvent('sa_share_needed',{email:MOCK._saEmail});
       window.uiEvent('sheet_status',{text:'sheet not shared with the service account',kind:'bad'});
       return;
     }
-    MOCK._recent = [{id:'demo',title:'Union Pantry Roster',url:u||'https://docs.google.com/spreadsheets/d/DEMO',used:'2026-07-24'},
+    MOCK._curTab = tab || MOCK._curTab;
+    MOCK._recent = [{id:'demo',title:'ANUSA Union Pantry Registration',url:u||'https://docs.google.com/spreadsheets/d/DEMO',used:'2026-07-24',tab:MOCK._curTab,cols:{}},
                     ...MOCK._recent.filter(r=>r.url!==u)].slice(0,8);
     window.uiEvent('recent_sheets',{mode:'sheet',list:MOCK._recent});
-    window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,
+    window.uiEvent('sheet_loaded',{tab:MOCK._curTab,tabs:MOCK._tabs,rows:137,
       headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:[2,4,1]});
   },500),
+  select_tab:(tab)=>setTimeout(()=>{ MOCK._curTab=tab;
+    window.uiEvent('sheet_loaded',{tab:tab,tabs:MOCK._tabs,rows:137,
+      headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:[2,4,1]}); },300),
   manual:(v)=>{
     window.uiEvent('working',{id:v});
     const exact = MOCK_ROSTER.find(r=>r.id===v);
@@ -928,7 +952,7 @@ setTimeout(() => {
   window.uiEvent('recent_sheets',{mode:'sheet',list:[
     {id:'d1',title:'Union Pantry Roster',url:'https://docs.google.com/spreadsheets/d/DEMO1',used:'2026-07-24'},
     {id:'d2',title:'O-Week Signups',url:'https://docs.google.com/spreadsheets/d/DEMO2',used:'2026-07-20'}]});
-  window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:[2,4,1]});
+  window.uiEvent('sheet_loaded',{tab:'Monday',tabs:MOCK._tabs,rows:137,headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:[2,4,1]});
   ui.roster = MOCK_ROSTER; window.uiEvent('attendance',{present:42,total:137});
   window.uiEvent('result',{status:'checked-in',id:'8221537',name:'Malakai King',ts:'23:31:41'});
   ui.addHistory('7752506','already','warn','23:30:02');

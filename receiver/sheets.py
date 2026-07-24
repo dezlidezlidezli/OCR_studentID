@@ -139,23 +139,69 @@ def set_auth_mode(mode):
 
 
 def recent_sheets(mode):
-    """Recently-used spreadsheets for a mode: [{id, title, url, used}], newest first."""
+    """Recently-used spreadsheets for a mode, newest first. Each:
+    {id, title, url, used, tab, cols:{<tab>:[id_i,tick_i,name_i]}}."""
     return (_read_prefs().get("recent_sheets") or {}).get(mode) or []
 
 
-def remember_recent_sheet(mode, sid, title, url):
-    """Record (or bump to the top) a spreadsheet in a mode's recently-used list, keyed by the
-    spreadsheet id, labelled by its title, stamped with today's date. Capped at 8."""
-    if not sid:
-        return
+def recent_sheet_record(mode, sid):
+    for r in recent_sheets(mode):
+        if r.get("id") == sid:
+            return r
+    return None
+
+
+def _save_recent(mode, lst):
     d = _read_prefs()
     rec = d.get("recent_sheets") or {}
-    lst = [x for x in (rec.get(mode) or []) if x.get("id") != sid]
-    lst.insert(0, {"id": sid, "title": (title or "").strip() or "(untitled sheet)",
-                   "url": url, "used": datetime.date.today().strftime("%Y-%m-%d")})
     rec[mode] = lst[:8]
     d["recent_sheets"] = rec
     _write_prefs(d)
+
+
+def remember_recent_sheet(mode, sid, title, url, tab=None):
+    """Record (or bump to the top) a spreadsheet in a mode's recently-used list, keyed by the
+    spreadsheet id, labelled by its title, stamped with today's date. Preserves any cached
+    per-tab column choices, and records the last-used tab. Capped at 8."""
+    if not sid:
+        return
+    prev = recent_sheet_record(mode, sid) or {}
+    lst = [x for x in recent_sheets(mode) if x.get("id") != sid]
+    lst.insert(0, {
+        "id": sid,
+        "title": (title or "").strip() or prev.get("title") or "(untitled sheet)",
+        "url": url or prev.get("url"),
+        "used": datetime.date.today().strftime("%Y-%m-%d"),
+        "tab": tab if tab is not None else prev.get("tab"),
+        "cols": prev.get("cols") or {},
+    })
+    _save_recent(mode, lst)
+
+
+def remember_sheet_cols(mode, sid, tab, cols):
+    """Cache the chosen [id_i, tick_i, name_i] column indices for a specific sheet + tab, so a
+    later reload restores them instead of re-guessing. Also records `tab` as the last used."""
+    if not sid or tab is None:
+        return
+    rec = recent_sheet_record(mode, sid)
+    if rec is None:
+        return
+    lst = [x for x in recent_sheets(mode) if x.get("id") != sid]
+    rec = dict(rec)
+    colmap = dict(rec.get("cols") or {})
+    colmap[str(tab)] = list(cols)
+    rec["cols"] = colmap
+    rec["tab"] = tab
+    rec["used"] = datetime.date.today().strftime("%Y-%m-%d")
+    lst.insert(0, rec)
+    _save_recent(mode, lst)
+
+
+def recent_sheet_cols(mode, sid, tab):
+    rec = recent_sheet_record(mode, sid)
+    if not rec:
+        return None
+    return (rec.get("cols") or {}).get(str(tab))
 
 
 def get_user_initials():
