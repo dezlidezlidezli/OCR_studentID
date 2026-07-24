@@ -416,23 +416,7 @@ function setupCamTools() {
   if (caps.focusMode && caps.focusMode.includes('continuous')) {
     state.track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
   }
-
-  const torchBtn = $('#torchBtn');
-  if (caps.torch) {
-    torchBtn.style.display = 'block';
-    torchBtn.onclick = async () => {
-      const on = !torchBtn.classList.contains('on');
-      try { await state.track.applyConstraints({ advanced: [{ torch: on }] }); torchBtn.classList.toggle('on', on); } catch (e) {}
-    };
-  } else torchBtn.style.display = 'none';
-
-  const zw = $('#zoomWrap'), z = $('#zoom');
-  if (caps.zoom && caps.zoom.max > caps.zoom.min) {
-    zw.style.display = 'flex';
-    z.min = caps.zoom.min; z.max = Math.min(caps.zoom.max, caps.zoom.min + 6); z.step = caps.zoom.step || 0.1;
-    z.value = state.track.getSettings().zoom || caps.zoom.min;
-    z.oninput = () => { state.track.applyConstraints({ advanced: [{ zoom: Number(z.value) }] }).catch(() => {}); };
-  } else zw.style.display = 'none';
+  // (Torch + zoom controls removed — the camera runs with autofocus only.)
 }
 
 async function requestWakeLock() {
@@ -1075,13 +1059,7 @@ async function onStart() {
 function onPause() {
   state.sessionActive = false;   // deliberate pause — don't auto-reboot on the next foreground
   stopScanning();
-  // turn the torch off before releasing the camera (saves battery)
-  const tb = $('#torchBtn');
-  if (tb && tb.classList.contains('on') && state.track) {
-    try { state.track.applyConstraints({ advanced: [{ torch: false }] }); } catch (e) {}
-    tb.classList.remove('on');
-  }
-  stopCamera();            // stops the camera track (light off) + releases the wake lock
+  stopCamera();            // stops the camera track + releases the wake lock
   setReadout('', 'paused — camera off', 'warn');
   // A distinct paused gate so it's clearly a pause (session/room kept), not an end.
   const desc = $('#gateDesc');

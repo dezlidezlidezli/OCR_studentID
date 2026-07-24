@@ -52,7 +52,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.81"   # shared version across the Mac app + web app
+VERSION        = "14.82"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -232,9 +232,15 @@ class Api:
         threading.Thread(target=self._drain, daemon=True).start()
         self._emit("version", {"v": VERSION})
         self._emit_auth()      # tell the UI the saved auth mode + whether it's ready on open
+        self._emit("user_info", {"initials": sheets.get_user_initials()})
         if sheets.auth_ready():
             threading.Thread(target=lambda: self._do_sign_in(False), daemon=True).start()
-        self.start_pairing()   # open to the pairing QR; a phone's "hello" reveals the app
+        # Hard launch gate: only open the pairing QR once BOTH auth and initials are set. Until
+        # then the UI shows a blocking setup gate — no phone can pair, nothing else is usable.
+        if self.setup_ready():
+            self.start_pairing()
+        else:
+            self._emit("setup_required", {})
 
     def start_pairing(self):
         """Generate a room, connect, and show the pairing QR until a phone says hello."""
@@ -309,6 +315,13 @@ class Api:
     # ── scan handling ────────────────────────────────────────────────────────
     def _handle_scan(self, data, sid):
         ts = datetime.now().strftime("%H:%M:%S")
+        if not sheets.get_user_initials():
+            # Initials are mandatory (record-keeping). Backstop in case they're cleared mid-session.
+            self._emit("result", {"status": "error", "id": sid,
+                                  "name": "set your initials in Settings first", "ts": ts})
+            self.bridge.send_status(data.get("seq"), data.get("dev"), "error",
+                                    "operator initials not set", sid)
+            return
         if self.mode == "sheet":
             if not self.sheet_ready:
                 self._emit("result", {"status": "error", "id": sid,
@@ -455,17 +468,18 @@ class Api:
             return False
 
     def _record(self, ts, sid, label):
-        self._hist.insert(0, {"ts": ts, "id": sid, "result": label, "dev": "", "seq": ""})
-        self._log_csv(ts, sid, label)
+        who = sheets.get_user_initials()
+        self._hist.insert(0, {"ts": ts, "id": sid, "result": label, "dev": "", "seq": "", "who": who})
+        self._log_csv(ts, sid, label, who)
 
-    def _log_csv(self, ts, sid, label):
+    def _log_csv(self, ts, sid, label, who=""):
         try:
             needs_header = not LOG_PATH.exists()
             with open(LOG_PATH, "a", newline="") as f:
                 w = csv.writer(f)
                 if needs_header:
-                    w.writerow(["timestamp", "id", "result"])
-                w.writerow([ts, sid, label])
+                    w.writerow(["timestamp", "id", "result", "operator"])
+                w.writerow([ts, sid, label, who])
         except Exception:
             pass
 
@@ -477,18 +491,21 @@ class Api:
         code = str(data.get("code", "")).strip().upper()
         if not (student and code):
             return
-        self._tblog.insert(0, {"ts": ts, "student": student, "code": code})
-        self._log_pair_csv(ts, student, code)
+        if not sheets.get_user_initials():
+            return   # initials mandatory — don't log an untraceable pairing
+        who = sheets.get_user_initials()
+        self._tblog.insert(0, {"ts": ts, "student": student, "code": code, "who": who})
+        self._log_pair_csv(ts, student, code, who)
         self._emit("tbpair", {"student": student, "code": code, "ts": ts})
 
-    def _log_pair_csv(self, ts, student, code):
+    def _log_pair_csv(self, ts, student, code, who=""):
         try:
             needs_header = not TB_LOG_PATH.exists()
             with open(TB_LOG_PATH, "a", newline="") as f:
                 w = csv.writer(f)
                 if needs_header:
-                    w.writerow(["timestamp", "student", "textbook"])
-                w.writerow([ts, student, code])
+                    w.writerow(["timestamp", "student", "textbook", "operator"])
+                w.writerow([ts, student, code, who])
         except Exception:
             pass
 
@@ -502,7 +519,23 @@ class Api:
         return {"version": VERSION, "mode": self.mode}
 
     def set_user_initials(self, v):
-        return sheets.set_user_initials(v)
+        out = sheets.set_user_initials(v)
+        self._emit("user_info", {"initials": out})   # keep the launch gate + Settings in sync
+        return out
+
+    def setup_ready(self):
+        """The two launch requirements: a usable auth mode AND the operator's initials."""
+        return bool(sheets.auth_ready() and sheets.get_user_initials())
+
+    def finish_setup(self):
+        """Called by the launch gate's Continue button. Only starts pairing once BOTH auth and
+        initials are in place — so a phone can't be paired, and the app can't be used, until the
+        operator has set up. Double-checks server-side; the gate is not the only guard."""
+        if not self.setup_ready():
+            return {"ok": False}
+        if not self.connected:
+            self.start_pairing()
+        return {"ok": True}
 
     def remember_sheet(self, url, title):
         """Add the just-loaded sheet to the current mode's recently-used list and push it."""

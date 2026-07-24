@@ -39,6 +39,20 @@ fi
 xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null
 echo "✓ Cleared the quarantine flag — it'll open with a normal double-click now."
 
+# Install the service-account key (if it was zipped alongside) into the app's per-user support
+# dir, so the recipient is signed in to Google Sheets automatically — no "Load key…" step.
+KEY="service_account.json"
+SUPPORT="$HOME/Library/Application Support/ANUSA Scanner"
+if [ -f "$HERE/$KEY" ]; then
+    mkdir -p "$SUPPORT"
+    if cp "$HERE/$KEY" "$SUPPORT/$KEY" 2>/dev/null; then
+        chmod 600 "$SUPPORT/$KEY" 2>/dev/null
+        echo "✓ Installed the Google service-account key — Sheets access is ready."
+    else
+        echo "  (couldn't install the service-account key — you can load it in Settings instead)"
+    fi
+fi
+
 open "$TARGET"
 echo "✓ Launched:  $TARGET"
 echo ""

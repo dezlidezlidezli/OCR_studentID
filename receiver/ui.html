@@ -206,6 +206,18 @@
   @keyframes spin{to{transform:rotate(360deg)}}
   .pair-skip{margin-top:18px;color:var(--faint);font-size:12px;text-decoration:underline}
   .pair-skip:hover{color:var(--muted)}
+
+  /* mandatory setup gate — blocks pairing/use until auth + initials are set */
+  #setupGate{z-index:70}
+  #setupGate .pair-card{text-align:left;padding:30px 34px 28px;width:min(430px,92vw)}
+  .setup-item{display:flex;gap:12px;align-items:flex-start;padding:13px 0;border-top:1px solid var(--line2)}
+  .setup-item:first-of-type{border-top:0}
+  .setup-check{flex:none;width:22px;height:22px;border-radius:50%;border:2px solid var(--line);
+       display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--faint);margin-top:1px}
+  .setup-item.done .setup-check{border-color:var(--ok);background:var(--ok);color:#fff}
+  .setup-title{font-weight:600;font-size:14px}
+  .setup-sub{color:var(--muted);font-size:12px;margin-top:2px;line-height:1.45}
+  .setup-item.done .setup-sub{color:var(--ok)}
 </style>
 </head>
 <body>
@@ -216,7 +228,7 @@
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="settingsBtn" title="Settings">⚙ Settings<span class="badge" id="settingsBadge"></span></button>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.81</div>
+    <div class="ver" id="ver" style="display:none">v14.82</div>
   </header>
 
   <main>
@@ -280,7 +292,7 @@
       </div>
 
       <div class="card manual">
-        <h3>Manual entry <span class="hint">type or search — the name confirms who</span></h3>
+        <h3>Manual entry</h3>
         <div class="manual-wrap">
           <div class="row">
             <input class="input" id="manualIn" placeholder="type a student number" inputmode="numeric" maxlength="7" autocomplete="off">
@@ -310,6 +322,26 @@
     <div class="pair-room" id="pairRoom">room ——</div>
     <div class="pair-wait"><span class="spin"></span> waiting for a phone…</div>
     <button class="pair-skip" id="pairSkip">Skip — set up manually</button>
+  </div>
+</div>
+
+<div class="pair-view hidden" id="setupGate">
+  <div class="pair-card">
+    <div class="pair-brand" style="text-align:center"><b>ANUSA&nbsp;SCANNER</b> · RECEIVER</div>
+    <h2 style="text-align:center">Finish set-up to begin</h2>
+    <p style="text-align:center">Both are required before you can pair a phone or use the scanner.</p>
+    <div class="setup-item" id="setupInitialsItem">
+      <span class="setup-check" id="setupInitialsCheck">1</span>
+      <div><div class="setup-title">Your initials</div>
+        <div class="setup-sub" id="setupInitialsSub">recorded against each check-in for record-keeping</div></div>
+    </div>
+    <div class="setup-item" id="setupAuthItem">
+      <span class="setup-check" id="setupAuthCheck">2</span>
+      <div><div class="setup-title">Google&nbsp;Sheets access</div>
+        <div class="setup-sub" id="setupAuthSub">a service-account key, or sign in with Google</div></div>
+    </div>
+    <button class="btn ghost wide" id="setupOpen" style="margin-top:14px">⚙ Open Settings to set up</button>
+    <button class="btn primary wide" id="setupContinue" style="margin-top:10px" disabled>Continue</button>
   </div>
 </div>
 
@@ -383,8 +415,12 @@
         <span class="chip" id="saChip"><span class="dot"></span><span id="saStat">no key loaded</span></span>
       </div>
       <div id="saEmail" style="display:none;font-size:12px;color:var(--muted);margin-top:10px;line-height:1.55">
-        Share roster sheets with<br><b id="saEmailTxt" style="color:var(--text);font-family:var(--mono)"></b>
-        &nbsp;·&nbsp;<a href="#" id="saClear" style="color:var(--blue)">remove key</a>
+        Share roster sheets with:
+        <div class="row" style="gap:8px;margin-top:6px">
+          <code id="saEmailTxt" style="flex:1;color:var(--text);font-family:var(--mono);font-size:12px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></code>
+          <button class="btn ghost" id="saEmailCopy" style="padding:8px 12px;font-size:12px">Copy</button>
+        </div>
+        <a href="#" id="saClear" style="color:var(--blue);display:inline-block;margin-top:7px">remove key</a>
       </div>
     </div>
 
@@ -422,7 +458,7 @@ const api = () => (window.pywebview && window.pywebview.api) || MOCK;
 const ui = {
   connected:false, mode:'keys', signedIn:false, sheetReady:false, headers:[], history:[], roster:[],
   auth:{mode:'service_account', ready:false, saPresent:false, saEmail:''}, _authDismissed:false,
-  recent:{sheet:[], textbook:[]},
+  recent:{sheet:[], textbook:[]}, hasInitials:false, _setupPassed:false,
 
   setConn(on, room){
     this.connected = on;
@@ -526,13 +562,28 @@ const ui = {
     $('#oauthStat').textContent = oOk ? 'signed in — ready' : 'not signed in';
     // readiness surfaces
     const modeLabel = a.mode==='service_account' ? 'Service account' : 'Google sign-in';
-    $('#settingsBadge').classList.toggle('show', !a.ready);
+    $('#settingsBadge').classList.toggle('show', !a.ready || !this.hasInitials);
     $('#pantryAuthChip').className = 'chip ' + (a.ready ? 'ok' : 'bad');
     $('#pantryAuthStat').textContent = a.ready ? (modeLabel+' — ready') : (modeLabel+' — not set up');
     $('#pantryAuthSetup').style.display = a.ready ? 'none' : 'inline-flex';
     const lb = $('#loadBtn'); if(lb) lb.disabled = !a.ready;
     if(a.ready) this._authDismissed = false;          // becoming ready re-arms the prompt
     $('#authBanner').classList.toggle('show', !a.ready && !this._authDismissed);
+    this.renderSetupGate();
+  },
+  setInitials(v){ this.hasInitials = !!(v && v.trim()); this.renderAuth(); },
+  renderSetupGate(){
+    const initialsOK = this.hasInitials, authOK = this.auth.ready;
+    const setItem = (id, ok) => { const e=$(id); if(e) e.classList.toggle('done', ok); };
+    setItem('#setupInitialsItem', initialsOK);
+    setItem('#setupAuthItem', authOK);
+    const ci=$('#setupInitialsCheck'); if(ci) ci.textContent = initialsOK ? '✓' : '1';
+    const ca=$('#setupAuthCheck');     if(ca) ca.textContent = authOK ? '✓' : '2';
+    const both = initialsOK && authOK;
+    const cont=$('#setupContinue'); if(cont) cont.disabled = !both;
+    // Only ever REVEAL the gate here (when set-up is incomplete); it's hidden explicitly by
+    // Continue / show_pairing so a late event can't pop it back over a running session.
+    if(!both && !this._setupPassed){ const g=$('#setupGate'); if(g) g.classList.remove('hidden'); }
   },
   setRecent(mode, list){ this.recent[mode] = list||[]; if(mode==='sheet') this.renderRecent(); },
   renderRecent(){
@@ -589,12 +640,14 @@ window.uiEvent = (type, p={}) => {
   else if(type==='signed_in'){ ui.signedIn=p.ok; }   // display is driven by the 'auth' event
   else if(type==='auth'){ ui.setAuth(p); }
   else if(type==='sa_email'){ $('#saEmailTxt').textContent=p.email||''; }
-  else if(type==='user_info'){ $('#userInitials').value = p.initials||''; }
+  else if(type==='user_info'){ $('#userInitials').value = p.initials||''; ui.setInitials(p.initials); }
+  else if(type==='setup_required'){ ui._setupPassed=false; ui.renderSetupGate(); }
   else if(type==='sheet_loaded'){ ui.hideShareNeeded(); ui.fillCols(p.headers, p.guess); ui.setSheetStat(p.tab+' · '+p.rows+' rows', 'ok'); }
   else if(type==='recent_sheets'){ ui.setRecent(p.mode, p.list); }
   else if(type==='sa_share_needed'){ ui.showShareNeeded(p.email); }
   else if(type==='sheet_status'){ ui.setSheetStat(p.text, p.kind); ui.sheetReady = p.kind==='ok'; }
-  else if(type==='show_pairing'){ $('#pairQr').src=p.img; $('#pairRoom').textContent='room '+p.room; $('#pairView').classList.remove('hidden'); }
+  else if(type==='show_pairing'){ ui._setupPassed=true; $('#setupGate').classList.add('hidden');
+    $('#pairQr').src=p.img; $('#pairRoom').textContent='room '+p.room; $('#pairView').classList.remove('hidden'); }
   else if(type==='paired'){ $('#pairView').classList.add('hidden'); }
   else if(type==='reset'){ ui.doReset(); }
   else if(type==='version'){ $('#ver').textContent='v'+p.v; }
@@ -630,6 +683,21 @@ function closeSettings(){ $('#settingsBack').classList.remove('show'); }
 $('#settingsBtn').onclick = openSettings;
 $('#settingsDone').onclick = closeSettings;
 $('#settingsBack').onclick = e => { if(e.target.id==='settingsBack') closeSettings(); };
+// Mandatory setup gate
+$('#setupOpen').onclick = openSettings;
+$('#setupContinue').onclick = async () => {
+  const r = await api().finish_setup();
+  if(r && r.ok){ ui._setupPassed=true; $('#setupGate').classList.add('hidden'); closeSettings(); }
+};
+// Escape closes an open menu — same as clicking the backdrop. Not while the setup gate is up
+// (that lock has no click-outside close either), so Esc can't bypass required set-up.
+document.addEventListener('keydown', (e) => {
+  if(e.key !== 'Escape') return;
+  if(!$('#setupGate').classList.contains('hidden')) return;
+  if($('#settingsBack').classList.contains('show')) closeSettings();
+  else if($('#pantryBack').classList.contains('show')) closePantry();
+  else if($('#qrBack').classList.contains('show')) $('#qrBack').classList.remove('show');
+});
 document.querySelectorAll('#authSeg button').forEach(b => b.onclick = () => {
   ui.auth.mode = b.dataset.auth; ui.renderAuth();   // optimistic; backend confirms via 'auth'
   api().set_auth_mode(b.dataset.auth);
@@ -638,7 +706,7 @@ $('#authBannerBtn').onclick = openSettings;
 $('#authBannerX').onclick = () => { ui._authDismissed=true; $('#authBanner').classList.remove('show'); };
 $('#userInitials').addEventListener('input', e => {
   const v = e.target.value.toUpperCase().replace(/[^A-Z]/g,'').slice(0,5);
-  e.target.value = v; api().set_user_initials(v);
+  e.target.value = v; ui.setInitials(v); api().set_user_initials(v);   // optimistic gate update
 });
 $('#signinBtn').onclick = () => { $('#oauthStat').textContent='opening browser…'; api().sign_in(); };
 $('#saBtn').onclick = () => api().use_service_account();
@@ -651,12 +719,14 @@ $('#recentSheets').onchange = () => {
   $('#sheetUrl').value = v;
   if(!$('#loadBtn').disabled){ ui.setSheetStat('loading…','warn'); api().load_sheet(v); }
 };
-$('#saShareCopy').onclick = () => {
-  const t = $('#saShareEmail').textContent;
-  if(navigator.clipboard) navigator.clipboard.writeText(t).then(()=>{
-    $('#saShareCopy').textContent='Copied'; setTimeout(()=>$('#saShareCopy').textContent='Copy',1200);
+function copyText(text, btn){
+  if(!navigator.clipboard) return;
+  navigator.clipboard.writeText(text).then(()=>{
+    const t=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=t,1200);
   }).catch(()=>{});
-};
+}
+$('#saShareCopy').onclick = () => copyText($('#saShareEmail').textContent, $('#saShareCopy'));
+$('#saEmailCopy').onclick = () => copyText($('#saEmailTxt').textContent, $('#saEmailCopy'));
 $('#syncBtn').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
 ['#colId','#colTick','#colName'].forEach(s => $(s).onchange = () => ui.applyCols());
 $('#manualBtn').onclick = submitManual;
@@ -751,7 +821,7 @@ const MOCK = {
     window.uiEvent('auth',{mode:'service_account',ready:true,sa_present:true,sa_email:MOCK._saEmail});},300),
   clear_service_account:()=>{MOCK._saHave=false;window.uiEvent('signed_in',{ok:false});
     window.uiEvent('auth',{mode:'service_account',ready:false,sa_present:false,sa_email:''});},
-  set_user_initials:()=>{},
+  set_user_initials:()=>{}, finish_setup:async()=>({ok:true}),
   _recent:[],
   load_sheet:(u)=>setTimeout(()=>{
     if(String(u).includes('denied')){   // preview the "not shared" flow
@@ -779,7 +849,8 @@ const MOCK = {
   confirm_fuzzy:(id)=>{ const r=MOCK_ROSTER.find(x=>x.id===id); window.uiEvent('working',{id});
     setTimeout(()=>window.uiEvent('result',{status:'checked-in',id,name:r?r.name:'',ts:clock()}),300); },
   download_csv:()=>{}, pair_qr:async()=>({room:'9F2GM2',img:mockQR()}), set_focus:()=>{},
-  get_state:()=>window.uiEvent('auth',{mode:'service_account',ready:!!MOCK._saHave,sa_present:!!MOCK._saHave,sa_email:MOCK._saEmail}),
+  get_state:()=>{ window.uiEvent('auth',{mode:'service_account',ready:!!MOCK._saHave,sa_present:!!MOCK._saHave,sa_email:MOCK._saEmail});
+    window.uiEvent('user_info',{initials:MOCK._initials||''}); },
   new_day:()=>{ ui.doReset(); window.uiEvent('show_pairing',{room:'NEWDAY',img:mockQR()}); },
 };
 function clock(){ return new Date().toTimeString().slice(0,8); }
@@ -808,10 +879,11 @@ setTimeout(() => {
   // signals so this can't hinge on a timing race: the API object, the ready event, or a
   // real status/sign-in event having already arrived.
   if (_appReady || window.pywebview || ui.connected || ui.signedIn) return;
-  MOCK._saHave = true;   // preview: service account set up + ready
+  MOCK._saHave = true; MOCK._initials = 'MK';   // preview: fully set up (auth + initials)
   ui.setMode('sheet'); ui.setConn(true,'9F2GM2'); ui._focused=true;
   window.uiEvent('signed_in',{ok:true,sa:true});
   window.uiEvent('auth',{mode:'service_account',ready:true,sa_present:true,sa_email:MOCK._saEmail});
+  window.uiEvent('user_info',{initials:'MK'});
   window.uiEvent('recent_sheets',{mode:'sheet',list:[
     {id:'d1',title:'Union Pantry Roster',url:'https://docs.google.com/spreadsheets/d/DEMO1',used:'2026-07-24'},
     {id:'d2',title:'O-Week Signups',url:'https://docs.google.com/spreadsheets/d/DEMO2',used:'2026-07-20'}]});

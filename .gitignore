@@ -23,7 +23,11 @@ receiver/scans.csv
 # Demo data — kept local, not tracked
 demo_roster.csv
 
-# Google secrets — never commit
-receiver/credentials.json
-receiver/token.json
-receiver/service_account.json
+# Google secrets — never commit (global patterns so a key can't slip in from ANY location)
+credentials.json
+token.json
+service_account.json
+**/service_account.json
+**/credentials.json
+**/token.json
+prefs.json

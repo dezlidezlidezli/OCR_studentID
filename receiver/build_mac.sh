@@ -74,11 +74,20 @@ if [ -f Install.command ]; then
     echo "→ Added dist/Install.command (clears quarantine on the recipient's Mac)"
 fi
 
+# Ship the service-account key as a loose file next to the app too — Install.command copies it
+# into the recipient's Application Support so Sheets access works with no "Load key…" step.
+if [ -f service_account.json ]; then
+    cp service_account.json "dist/service_account.json"
+    chmod 600 "dist/service_account.json"
+    echo "→ Added dist/service_account.json (Install.command installs it to Application Support)"
+fi
+
 # ── 5. Done ───────────────────────────────────────────────────────────────────
 echo ""
 echo "✓  dist/${APP_NAME}.app is ready"
 echo ""
-echo "To distribute: zip BOTH  dist/${APP_NAME}.app  and  dist/Install.command  together."
+echo "To distribute: zip the WHOLE dist/ folder — ${APP_NAME}.app + Install.command"
+echo "   (+ service_account.json if present) — and send that."
 echo ""
 echo "⚠  Recipients: double-click  Install.command  once (right-click → Open if macOS blocks"
 echo "   it). It clears the quarantine flag, installs to /Applications, and launches — after"
