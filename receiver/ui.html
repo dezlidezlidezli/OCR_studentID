@@ -201,7 +201,7 @@
     <div class="spacer"></div>
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.77</div>
+    <div class="ver" id="ver">v14.78</div>
   </header>
 
   <main>
@@ -402,19 +402,30 @@ const ui = {
   },
   fillCols(headers, guess){
     this.headers = headers;
-    const fill = (sel, opts, val) => {
-      const s = $(sel); s.innerHTML='';
-      opts.forEach(o => { const e=document.createElement('option'); e.value=o; e.textContent=o; s.appendChild(e); });
-      if(val!=null) s.value = val;
+    // Options are valued by column INDEX, not header text — so two columns with the same
+    // name are distinct choices and the exact one picked is used. Duplicate names get a
+    // "· col X" suffix (the spreadsheet column letter) so they're tellable apart.
+    const colLetter = (i) => { let s='', n=i+1; while(n){ n--; s=String.fromCharCode(65+n%26)+s; n=(n/26)|0; } return s; };
+    const counts = {};
+    headers.forEach(h => { const k=String(h==null?'':h).trim().toLowerCase(); counts[k]=(counts[k]||0)+1; });
+    const label = (h, i) => {
+      const txt = (h==null||String(h).trim()==='') ? '(blank)' : String(h);
+      return counts[String(h==null?'':h).trim().toLowerCase()] > 1 ? `${txt}  ·  col ${colLetter(i)}` : txt;
     };
-    fill('#colId', headers, guess[0]);
-    fill('#colTick', headers, guess[1]);
-    fill('#colName', ['(none)',...headers], guess[2]||'(none)');
+    const fill = (sel, gi, allowNone) => {
+      const s = $(sel); s.innerHTML='';
+      if(allowNone){ const e=document.createElement('option'); e.value=''; e.textContent='(none)'; s.appendChild(e); }
+      headers.forEach((h, i) => { const e=document.createElement('option'); e.value=String(i); e.textContent=label(h,i); s.appendChild(e); });
+      s.value = (gi==null || gi<0) ? (allowNone ? '' : '0') : String(gi);
+    };
+    fill('#colId', guess[0], false);
+    fill('#colTick', guess[1], false);
+    fill('#colName', guess[2], true);
     this.applyCols();
   },
   applyCols(){
     if(!this.headers.length) return;
-    api().set_columns($('#colId').value, $('#colTick').value, $('#colName').value);
+    api().set_columns($('#colId').value, $('#colTick').value, $('#colName').value);  // values are indices
   },
   setSheetStat(text, kind){   // reflect in the modal and the on-card summary
     ['#sheetStat','#pantryStat'].forEach(s=>{const e=$(s); if(e) e.textContent=text;});
@@ -578,7 +589,7 @@ const MOCK = {
   use_service_account:()=>setTimeout(()=>{window.uiEvent('sa_email',{email:'anusa-scanner@my-proj.iam.gserviceaccount.com'});window.uiEvent('signed_in',{ok:true,sa:true});},300),
   clear_service_account:()=>window.uiEvent('signed_in',{ok:false}),
   load_sheet:()=>setTimeout(()=>window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,
-      headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:['UID:','Attendence','Full Name:']}),500),
+      headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:[2,4,1]}),500),
   manual:(v)=>{
     window.uiEvent('working',{id:v});
     const exact = MOCK_ROSTER.find(r=>r.id===v);
@@ -623,7 +634,7 @@ setTimeout(() => {
   if (_appReady || window.pywebview || ui.connected || ui.signedIn) return;
   ui.setMode('sheet'); ui.setConn(true,'9F2GM2'); ui._focused=true;
   window.uiEvent('signed_in',{ok:true});
-  window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:['UID:','Attendence','Full Name:']});
+  window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:[2,4,1]});
   ui.roster = MOCK_ROSTER; window.uiEvent('attendance',{present:42,total:137});
   window.uiEvent('result',{status:'checked-in',id:'8221537',name:'Malakai King',ts:'23:31:41'});
   ui.addHistory('7752506','already','warn','23:30:02');

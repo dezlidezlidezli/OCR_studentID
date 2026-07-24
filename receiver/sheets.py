@@ -261,35 +261,57 @@ class SheetSession:
             }
 
     def guess_columns(self):
-        """Best-guess (id_header, tick_header, name_header) for the dropdowns."""
+        """Best-guess (id_i, tick_i, name_i) column INDICES for the dropdowns (None if no
+        guess). Indices, not header text — a sheet can have two columns with the same name."""
         def find(pats):
-            for h in self.headers:
+            for i, h in enumerate(self.headers):
                 hl = str(h).strip().lower()
                 if any(p in hl for p in pats):
-                    return h
+                    return i
             return None
         def find_exact(names):     # exact match — safe for short tokens like "id"
-            for h in self.headers:
+            for i, h in enumerate(self.headers):
                 if str(h).strip().lower() in names:
-                    return h
+                    return i
             return None
-        id_g = (find(["uid", "student", "number"]) or find_exact({"id", "sid"})
-                or (self.headers[0] if self.headers else None))
+        id_g = find(["uid", "student", "number"])
+        if id_g is None:
+            id_g = find_exact({"id", "sid"})
+        if id_g is None and self.headers:
+            id_g = 0
         tick_g = None
         wants = {t.lower() for t in today_headers()}
-        for h in self.headers:
+        for i, h in enumerate(self.headers):
             if str(h).strip().lower() in wants:
-                tick_g = h
+                tick_g = i
                 break
-        if not tick_g:
+        if tick_g is None:
             tick_g = find(["attend", "present", "check", "tick", "here"])
         name_g = find(["name"])
         return id_g, tick_g, name_g
 
     def set_columns(self, id_col, tick_col, name_col=None):
-        self.id_i = resolve_col(self.headers, id_col)
-        self.tick_i = resolve_col(self.headers, tick_col)
-        self.name_i = resolve_col(self.headers, name_col) if name_col else None
+        """Set the ID / tick / name columns. Accepts an explicit 0-based INDEX (what the
+        dropdowns send — so duplicate header names pick the exact column) or a text spec
+        (header name / letter / 'today')."""
+        self.id_i = self._to_index(id_col)
+        self.tick_i = self._to_index(tick_col)
+        self.name_i = (None if name_col in (None, "", "(none)", -1, "-1")
+                       else self._to_index(name_col))
+
+    def _to_index(self, spec):
+        if isinstance(spec, bool):
+            raise ValueError("bad column")
+        if isinstance(spec, int):
+            if 0 <= spec < len(self.headers):
+                return spec
+            raise ValueError(f"column index {spec} out of range")
+        s = str(spec).strip()
+        if re.fullmatch(r"\d+", s):            # dropdown sends the index as a string
+            i = int(s)
+            if 0 <= i < len(self.headers):
+                return i
+        return resolve_col(self.headers, s)    # header name / letter / 'today'
 
     def plan_checkin(self, student):
         """Decide the check-in outcome from the loaded sheet WITHOUT the (slow) API write, so
