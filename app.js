@@ -54,7 +54,8 @@ const state = {
   roster: null,        // uid → {name, ticked}, pushed by the Mac in sheet mode; null = not synced
   _shown: {},          // seq → status shown locally, so the Mac's echo doesn't double-flash
   rxMode: null,        // receiver mode: null/'keys'/'sheet' = normal scan; 'textbook' = two-stage flow
-  tbStage: null,       // Textbook Library flow: 'student' | 'await' | 'textbook' | 'done'
+  tbStage: null,       // Textbook Library flow: 'student' | 'await' | 'has' | 'textbook' | 'done'
+  tbRegister: {},      // uid → code they currently have on hire (Textbook mode; pushed by the Mac)
   sessionActive: false,// a scan session is live (survives backgrounding) → auto-reboot on resume
   _hiddenAt: 0,        // when the tab was last backgrounded (ms) — gauges how stale things are
   _resuming: false,
@@ -137,6 +138,7 @@ async function connectBridge() {
       }
       if (msg.t === 'mode') { markRxSynced(); applyRxMode(msg.mode); return; }
       if (msg.t === 'roster') { markRxSynced(); applyRoster(msg.r); return; }
+      if (msg.t === 'tbroster') { markRxSynced(); applyTbRegister(msg.r); return; }
       if (msg.t === 'checkin') {
         // Keep the local roster's tick state in sync with EVERY check-in (this phone AND any
         // other phone in the room), so a repeat scan correctly reads as "already".
@@ -215,6 +217,14 @@ function resultLabel(status, name) {
   const [txt, cls] = RESULT_MAP[status] || [status, ''];
   return [txt + (name ? '  ·  ' + name : ''), cls];
 }
+// Textbook mode: the Mac pushes the active-borrow register so we can flag "already has a book"
+// the instant a student card is scanned (uid → the code they currently hold).
+function applyTbRegister(rows) {
+  const m = {};
+  for (const row of (rows || [])) { if (row && row[0] != null) m[String(row[0])] = row[1] || ''; }
+  state.tbRegister = m;
+}
+
 // The Mac pushes the roster (+tick state) in sheet mode; we cache it to answer scans locally.
 function applyRoster(rows) {
   if (!rows || !rows.length) { state.roster = null; return; }   // cleared → disable local eval
@@ -867,15 +877,26 @@ function currentScanTask() {
 }
 function onStudentScanned(studentId) {
   _tbStudent = studentId;
-  flashScan(); flashReticle(); unlockAudio(); chimeWarn();   // captured — one more to go
-  state.tbStage = 'await'; resetPaddleConfirm();
-  showTbOverlay('await', studentId, null);
+  flashScan(); flashReticle(); unlockAudio();
+  // One book each: if the cached register says this student already has a book out, offer to log
+  // its RETURN (or cancel) instead of hiring a second.
+  const held = state.tbRegister ? state.tbRegister[normId(studentId)] : undefined;
+  if (held !== undefined) {
+    chimeWarn();
+    state.tbStage = 'has'; resetPaddleConfirm();
+    showTbOverlay('has', studentId, held);
+  } else {
+    chimeWarn();   // captured — one more to go
+    state.tbStage = 'await'; resetPaddleConfirm();
+    showTbOverlay('await', studentId, null);
+  }
   updateHint();
 }
 function onTextbookScanned(code) {
   flashScan(); flashReticle(); unlockAudio(); chimeOk();     // complete
   state.tbStage = 'done'; resetPaddleConfirm();
   sendTextbookPair(_tbStudent, code);
+  if (state.tbRegister) state.tbRegister[normId(_tbStudent)] = code;   // optimistic: now on hire
   showTbOverlay('done', _tbStudent, code);
   updateHint();
 }
@@ -888,12 +909,35 @@ async function sendTextbookPair(student, code) {
     state.client.publish(topicBase() + '/scan', payload, { qos: 1 });
   } catch (e) { /* not fatal — the pairing still showed on the phone */ }
 }
+async function sendTextbookReturn(student) {
+  if (state.tbRegister) delete state.tbRegister[normId(student)];   // optimistic: no longer on hire
+  if (!state.client) return;
+  state.seq += 1; localStorage.setItem('wedge.seq', String(state.seq));
+  try {
+    const payload = await encryptJSON({ t: 'tbreturn', student, ts: Date.now(),
+                                        seq: state.seq, dev: state.deviceId });
+    state.client.publish(topicBase() + '/scan', payload, { qos: 1 });
+  } catch (e) { /* not fatal */ }
+}
 function showTbOverlay(stage, student, code) {
   const ov = $('#tbOverlay'); if (!ov) return;
+  const badge = $('#tbBadge'), b2 = $('#tbBtn2');
+  badge.textContent = '✓'; badge.style.color = ''; badge.style.background = '';
+  b2.style.display = 'none';
   if (stage === 'await') {
     $('#tbTitle').textContent = 'Student captured';
     $('#tbSub').textContent = 'u' + student;
     $('#tbBtn').textContent = 'Okay — scan textbook code';
+  } else if (stage === 'has') {
+    badge.textContent = '!'; badge.style.color = '#fff'; badge.style.background = 'var(--warn)';
+    $('#tbTitle').textContent = 'Already has a book on hire';
+    $('#tbSub').textContent = 'u' + student + '  ·  ' + (code || '—');
+    $('#tbBtn').textContent = 'Log return';
+    b2.textContent = 'Cancel — one book each'; b2.style.display = 'block';
+  } else if (stage === 'returned') {
+    $('#tbTitle').textContent = 'Returned ✓';
+    $('#tbSub').textContent = 'u' + student + (code ? ('  ·  ' + code) : '');
+    $('#tbBtn').textContent = 'Next student';
   } else {
     $('#tbTitle').textContent = 'Complete ✓';
     $('#tbSub').textContent = 'u' + student + '  →  ' + code;
@@ -1264,7 +1308,15 @@ function wireUI() {
   $('#reloadBtn').addEventListener('click', forceReload);
   $('#tbBtn').addEventListener('click', () => {
     if (state.tbStage === 'await') { state.tbStage = 'textbook'; resetPaddleConfirm(); hideTbOverlay(); }
+    else if (state.tbStage === 'has') {                 // primary here = "Log return"
+      sendTextbookReturn(_tbStudent); unlockAudio(); chimeOk();
+      state.tbStage = 'done'; showTbOverlay('returned', _tbStudent, null);
+    }
     else if (state.tbStage === 'done') { state.tbStage = 'student'; _tbStudent = null; resetPaddleConfirm(); hideTbOverlay(); }
+    updateHint();
+  });
+  $('#tbBtn2').addEventListener('click', () => {        // "Cancel — one book each"
+    state.tbStage = 'student'; _tbStudent = null; resetPaddleConfirm(); hideTbOverlay();
     updateHint();
   });
   $('#pairManual').addEventListener('click', () => {

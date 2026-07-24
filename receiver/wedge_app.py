@@ -52,7 +52,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.87"   # shared version across the Mac app + web app
+VERSION        = "14.88"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -131,6 +131,11 @@ class Bridge:
         (name / registered / already) instantly, with no round-trip. `rows` = [[uid,name,ticked]]."""
         self._publish({"t": "roster", "r": rows})
 
+    def send_tbregister(self, rows):
+        """Textbook Library: push the active-borrow register [[uid, code], ...] so a phone can flag
+        'already has a book' the moment a student card is scanned."""
+        self._publish({"t": "tbroster", "r": rows})
+
     def send_mode(self, mode):
         """Tell the phones which mode the receiver is in, so they run the right scan flow
         (e.g. the two-stage student→textbook flow in Textbook Library mode)."""
@@ -180,7 +185,7 @@ class Bridge:
             if t == "hello":                       # a phone joined this room → paired
                 self._q.put(("paired", data.get("dev")))
                 return
-            if t not in ("scan", "tbpair"):
+            if t not in ("scan", "tbpair", "tbreturn"):
                 return
             pair = (data.get("dev"), data.get("seq"))
             if pair in self._seen_s:
@@ -191,6 +196,9 @@ class Bridge:
             self._seen_s.add(pair)
             if t == "tbpair":                      # Textbook Library: a student↔textbook pairing
                 self._q.put(("tbpair", data))
+                return
+            if t == "tbreturn":                    # Textbook Library: a student returning their book
+                self._q.put(("tbreturn", data))
                 return
             sid = str(data.get("id", "")).strip()
             if not sid.isdigit():
@@ -308,10 +316,13 @@ class Api:
             self._checkin_result(ev[1], ev[2], ev[3], ev[4])
         elif kind == "tbpair":
             self._tbpair(ev[1])
+        elif kind == "tbreturn":
+            self._tbreturn(ev[1])
         elif kind == "paired":
             self._emit("paired", {"dev": ev[1]})
             self.bridge.send_mode(self.mode)   # tell the (re)joined phone the current mode
-            self._push_roster()   # a phone (re)joined → give it the roster for instant results
+            self._push_roster()      # Pantry: roster for instant results
+            self._push_tbregister()  # Textbook: active-borrow register for the one-book guard
 
     # ── scan handling ────────────────────────────────────────────────────────
     def _handle_scan(self, data, sid):
@@ -498,9 +509,16 @@ class Api:
         # If a Textbook borrow-log sheet is set up, append the row (Status/Date/Initials/UID/Code).
         row_status = None
         if self.mode == "textbook" and self.sheet and self.sheet_ready and self.sheet.tb_uid_i is not None:
+            # One book each: if this student already has an OPEN borrow, DON'T hire a second.
+            open_row, open_code = self.sheet.find_open_borrow(student)
+            if open_row is not None:
+                self._emit("tbpair", {"student": student, "code": code, "ts": ts,
+                                      "status": "already", "existing": open_code})
+                return
             try:
                 self.sheet.append_borrow(student, code, who, datetime.now().strftime("%d/%m/%Y"))
                 row_status = "on-hire"
+                self._push_tbregister()
             except Exception as e:
                 row_status = "error"
                 if self._sa_permission(e):
@@ -511,6 +529,31 @@ class Api:
         self._tblog.insert(0, {"ts": ts, "student": student, "code": code, "who": who})
         self._log_pair_csv(ts, student, code, who)
         self._emit("tbpair", {"student": student, "code": code, "ts": ts, "status": row_status})
+
+    def _tbreturn(self, data):
+        """A phone confirmed a student is returning their book → log the return on the sheet."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        student = re.sub(r"\D", "", str(data.get("student", "")))
+        if not student or not sheets.get_user_initials():
+            return
+        who = sheets.get_user_initials()
+        if not (self.mode == "textbook" and self.sheet and self.sheet_ready and self.sheet.tb_uid_i is not None):
+            return
+        open_row, open_code = self.sheet.find_open_borrow(student)
+        if open_row is None:
+            self._emit("tbpair", {"student": student, "code": "", "ts": ts, "status": "no-borrow"})
+            return
+        try:
+            self.sheet.log_return(open_row, who, datetime.now().strftime("%d/%m/%Y"))
+            self._push_tbregister()
+            self._log_pair_csv(ts, student, "RETURN:" + str(open_code), who)
+            self._emit("tbpair", {"student": student, "code": open_code, "ts": ts, "status": "returned"})
+        except Exception as e:
+            if self._sa_permission(e):
+                self._emit("sheet_status",
+                           {"text": "sheet not shared with the service account", "kind": "bad"})
+            else:
+                self._emit("sheet_status", {"text": f"return write failed: {str(e)[:32]}", "kind": "bad"})
 
     def _log_pair_csv(self, ts, student, code, who=""):
         try:
@@ -608,15 +651,20 @@ class Api:
             self.sheet_ready = False   # column mapping is mode-specific; re-set up for the new mode
         self.mode = m
         self.bridge.send_mode(self.mode)   # tell the phones which scan flow to run
-        # Sheet mode → give phones the roster for instant results; other modes → clear it so a
-        # stale roster can't make phones show sheet-style results.
-        if self.mode == "sheet":
-            self._push_roster()
-        else:
-            try:
+        # Give phones the register the mode needs (roster for Pantry, borrow-register for Textbook),
+        # and clear the other so a stale one can't drive wrong-mode results.
+        try:
+            if self.mode == "sheet":
+                self.bridge.send_tbregister([])
+                self._push_roster()
+            elif self.mode == "textbook":
                 self.bridge.send_roster([])
-            except Exception:
-                pass
+                self._push_tbregister()
+            else:
+                self.bridge.send_roster([])
+                self.bridge.send_tbregister([])
+        except Exception:
+            pass
 
     def connect(self, room, broker):
         room = (room or "").strip().upper()
@@ -756,23 +804,35 @@ class Api:
             self.sheet_ready = False
             self._emit("sheet_status", {"text": f"column error: {e}", "kind": "bad"})
 
-    def set_textbook_columns(self, status, date, init, uid, code):
+    def set_textbook_columns(self, status, date, init, uid, code, return_by=None, real_return=None):
         """Textbook Library: map the borrow-log columns (Status / Date of Hire / Initials / UID /
-        Assigned Codes). Cached per sheet+tab in the (separate) textbook recent store."""
+        Assigned Codes / Return received by / Real Return). Cached per sheet+tab in the (separate)
+        textbook recent store."""
         if not self.sheet or not self.sheet.headers:
             return
         try:
-            self.sheet.set_textbook_columns(status, date, init, uid, code)
+            self.sheet.set_textbook_columns(status, date, init, uid, code, return_by, real_return)
             self.sheet_ready = True
             if self.sheet.sid and self.sheet.tab is not None:
                 sheets.remember_sheet_cols(self.mode, self.sheet.sid, self.sheet.tab,
                                            [self.sheet.tb_status_i, self.sheet.tb_date_i,
                                             self.sheet.tb_init_i, self.sheet.tb_uid_i,
-                                            self.sheet.tb_code_i])
+                                            self.sheet.tb_code_i, self.sheet.tb_retby_i,
+                                            self.sheet.tb_realret_i])
             self._emit("sheet_status", {"text": "ready", "kind": "ok"})
+            self._push_tbregister()   # give the phones the active-borrow register
         except Exception as e:
             self.sheet_ready = False
             self._emit("sheet_status", {"text": f"column error: {e}", "kind": "bad"})
+
+    def _push_tbregister(self):
+        """Push the active-borrow register [[uid, code], ...] to the phones (Textbook mode)."""
+        try:
+            reg = self.sheet.tb_register() if (self.sheet and self.sheet_ready and
+                                               self.sheet.tb_uid_i is not None) else []
+            self.bridge.send_tbregister(reg)
+        except Exception:
+            pass
 
     def sync(self):
         if not self.sheet or self.sheet.sid is None:

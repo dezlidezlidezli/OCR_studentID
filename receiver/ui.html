@@ -243,7 +243,7 @@
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="settingsBtn" title="Settings">⚙ Settings<span class="badge" id="settingsBadge"></span></button>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver" style="display:none">v14.87</div>
+    <div class="ver" id="ver" style="display:none">v14.88</div>
   </header>
 
   <main>
@@ -407,6 +407,8 @@
       <label>Hired out by (init.)</label><select class="input" id="tbInit"></select>
       <label>UID</label><select class="input" id="tbUid"></select>
       <label>Assigned codes</label><select class="input" id="tbCode"></select>
+      <label>Return received by</label><select class="input" id="tbRetBy"></select>
+      <label>Real Return</label><select class="input" id="tbRealRet"></select>
     </div>
     <div class="row" style="margin-top:14px;justify-content:space-between">
       <span class="chip" id="sheetChip"><span class="dot"></span><span id="sheetStat">sign in, then load a sheet</span></span>
@@ -585,17 +587,20 @@ const ui = {
     headers.forEach(h => { const k=String(h==null?'':h).trim().toLowerCase(); counts[k]=(counts[k]||0)+1; });
     const label = (h,i) => { const txt=(h==null||String(h).trim()==='')?'(blank col '+colLetter(i)+')':String(h);
       return counts[String(h==null?'':h).trim().toLowerCase()]>1 ? `${txt}  ·  col ${colLetter(i)}` : txt; };
-    const fill = (sel, gi) => { const s=$(sel); s.innerHTML='';
+    const fill = (sel, gi, allowNone) => { const s=$(sel); s.innerHTML='';
+      if(allowNone){ const e=document.createElement('option'); e.value=''; e.textContent='(none)'; s.appendChild(e); }
       headers.forEach((h,i)=>{ const e=document.createElement('option'); e.value=String(i); e.textContent=label(h,i); s.appendChild(e); });
-      s.value = (gi==null||gi<0) ? '0' : String(gi); };
-    fill('#tbStatus', guess[0]); fill('#tbDate', guess[1]); fill('#tbInit', guess[2]);
-    fill('#tbUid', guess[3]); fill('#tbCode', guess[4]);
+      s.value = (gi==null||gi<0) ? (allowNone?'':'0') : String(gi); };
+    fill('#tbStatus', guess[0], false); fill('#tbDate', guess[1], false); fill('#tbInit', guess[2], false);
+    fill('#tbUid', guess[3], false); fill('#tbCode', guess[4], false);
+    fill('#tbRetBy', guess[5], true); fill('#tbRealRet', guess[6], true);   // return cols optional
     this.applyTbCols();
   },
   applyTbCols(){
     if(!this.headers.length) return;
     api().set_textbook_columns($('#tbStatus').value, $('#tbDate').value, $('#tbInit').value,
-                               $('#tbUid').value, $('#tbCode').value);
+                               $('#tbUid').value, $('#tbCode').value,
+                               $('#tbRetBy').value, $('#tbRealRet').value);
   },
   setAuth(p){
     this.auth = {mode:p.mode||'service_account', ready:!!p.ready,
@@ -822,7 +827,7 @@ $('#saShareCopy').onclick = () => copyText($('#saShareEmail').textContent, $('#s
 $('#saEmailCopy').onclick = () => copyText($('#saEmailTxt').textContent, $('#saEmailCopy'));
 $('#syncBtn').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
 ['#colId','#colTick','#colName'].forEach(s => $(s).onchange = () => ui.applyCols());
-['#tbStatus','#tbDate','#tbInit','#tbUid','#tbCode'].forEach(s => $(s).onchange = () => ui.applyTbCols());
+['#tbStatus','#tbDate','#tbInit','#tbUid','#tbCode','#tbRetBy','#tbRealRet'].forEach(s => $(s).onchange = () => ui.applyTbCols());
 $('#manualBtn').onclick = submitManual;
 $('#manualIn').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 7); renderSuggest(); });
 $('#manualIn').addEventListener('keydown', onManualKey);
@@ -920,11 +925,11 @@ const MOCK = {
   accessibility_status:()=>setTimeout(()=>window.uiEvent('accessibility',{mac:true,trusted:false}),150),
   open_accessibility_settings:()=>{},
   _recent:{sheet:[],textbook:[]}, _tabs:['Monday','Tuesday','Wednesday','Thursday','Friday'], _curTab:'Monday',
-  _tbHeaders:['','','Status','Date of Hire','Hired out by (initials)','Return received by','Real Return','Email','UID','Assigned Codes'],
+  _tbHeaders:['','','Status','Date of Hire','Hired out by (initials)','Return received by (initials)','Real Return (Date and Init.)','Email','UID','Assigned Codes'],
   _emitSheet:(tab)=>{ const tb=ui.mode==='textbook';
     window.uiEvent('sheet_loaded',{mode:ui.mode,tab:tab,tabs:MOCK._tabs,rows:137,
       headers: tb?MOCK._tbHeaders:['Email Address','Full Name:','UID:','Career','Attendence'],
-      guess: tb?[2,3,4,8,9]:[2,4,1]}); },
+      guess: tb?[2,3,4,8,9,5,6]:[2,4,1]}); },
   load_sheet:(u, tab)=>setTimeout(()=>{
     if(String(u).includes('denied')){   // preview the "not shared" flow
       window.uiEvent('sa_share_needed',{email:MOCK._saEmail});

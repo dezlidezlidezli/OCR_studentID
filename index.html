@@ -281,10 +281,11 @@
 <!-- Textbook Library two-stage prompt/complete overlay -->
 <div class="tb-overlay" id="tbOverlay" style="display:none">
   <div class="tb-card">
-    <div class="tb-badge">✓</div>
+    <div class="tb-badge" id="tbBadge">✓</div>
     <div class="tb-title" id="tbTitle"></div>
     <div class="tb-sub" id="tbSub"></div>
     <button class="go" id="tbBtn"></button>
+    <button class="go" id="tbBtn2" style="display:none;background:#fff;color:var(--hivis);border:1px solid var(--line)"></button>
   </div>
 </div>
 <div class="app">
@@ -365,7 +366,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.87</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.88</p>
 </div>
 
 <div class="toast" id="toast"></div>

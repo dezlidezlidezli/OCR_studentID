@@ -391,6 +391,7 @@ class SheetSession:
         self.id_i = self.tick_i = self.name_i = None
         # Textbook Library borrow-log columns (a different sheet shape — see append_borrow)
         self.tb_status_i = self.tb_date_i = self.tb_init_i = self.tb_uid_i = self.tb_code_i = None
+        self.tb_retby_i = self.tb_realret_i = None   # return columns (mark a book returned)
 
     def open(self, url, tab=None):
         """Load a spreadsheet tab. Returns {title, tab, tabs, headers, rows}."""
@@ -482,29 +483,38 @@ class SheetSession:
         return out
 
     def guess_textbook_columns(self):
-        """Best-guess column INDICES for the borrow log: [status, date, init, uid, code]. Fuzzy —
-        matches across the header row and the banner row above it."""
+        """Best-guess column INDICES for the borrow log:
+        [status, date, init, uid, code, return_by, real_return]. Fuzzy — matches across the header
+        row and the banner row above it."""
         texts = self._col_texts()
 
-        def find(pats):
+        def find(pats, exclude=()):
             for i, t in enumerate(texts):
-                if any(p in t for p in pats):
+                if any(p in t for p in pats) and not any(x in t for x in exclude):
                     return i
             return None
 
         status = find(["status"])
         date_i = find(["date of hire", "date student collected", "date of collection", "hire date"])
-        init_i = find(["hired out by", "operated the scanner", "lent by", "issued by", "initials"])
+        init_i = find(["hired out by", "issued by"], exclude=["return"])
+        if init_i is None:
+            init_i = find(["operated the scanner", "lent by"])
         uid_i = find(["uid", "student number", "student id"])
         code_i = find(["assigned code", "asset code", "assigned title", "title code", "code"])
-        return [status, date_i, init_i, uid_i, code_i]
+        retby_i = find(["return received by", "returned by", "received by"])
+        realret_i = find(["real return", "date and init", "date returned"])
+        return [status, date_i, init_i, uid_i, code_i, retby_i, realret_i]
 
-    def set_textbook_columns(self, status, date, init, uid, code):
+    def set_textbook_columns(self, status, date, init, uid, code, return_by=None, real_return=None):
+        def idx(v):
+            return None if v in (None, "", "(none)", -1, "-1") else self._to_index(v)
         self.tb_status_i = self._to_index(status)
         self.tb_date_i = self._to_index(date)
         self.tb_init_i = self._to_index(init)
         self.tb_uid_i = self._to_index(uid)
         self.tb_code_i = self._to_index(code)
+        self.tb_retby_i = idx(return_by)
+        self.tb_realret_i = idx(real_return)
 
     def append_borrow(self, uid, code, initials, date):
         """Append a borrow row: writes On Hire / date / initials / uXXXXXXX / code into the first
@@ -540,6 +550,69 @@ class SheetSession:
                 spreadsheetId=self.sid,
                 body={"valueInputOption": "USER_ENTERED", "data": data}).execute()
             return target + 1
+
+    def _is_open_row(self, r):
+        """A borrow row is OPEN (book still out) if it has a UID, its return hasn't been logged,
+        and its status isn't 'Returned'."""
+        if not normalize(self._cell(r, self.tb_uid_i)):
+            return False
+        if self.tb_realret_i is not None and str(self._cell(r, self.tb_realret_i)).strip():
+            return False
+        status = str(self._cell(r, self.tb_status_i)).strip().lower() if self.tb_status_i is not None else ""
+        return status != "returned"
+
+    def find_open_borrow(self, uid):
+        """The first OPEN borrow row for this student → (1-based row, code) or (None, None).
+        Powers the 'one book each' guard."""
+        with self._lock:
+            if self.tb_uid_i is None:
+                return None, None
+            target = normalize(uid)
+            for r in range(self.header_i + 1, len(self.values)):
+                if normalize(self._cell(r, self.tb_uid_i)) == target and self._is_open_row(r):
+                    code = self._cell(r, self.tb_code_i) if self.tb_code_i is not None else ""
+                    return r + 1, str(code)
+            return None, None
+
+    def log_return(self, row, initials, date):
+        """Mark a borrow returned: Return received by = initials, Real Return = 'date init',
+        Status = Returned. `row` is 1-based."""
+        with self._lock:
+            r = row - 1
+            data = []
+
+            def put(ci, val):
+                if ci is None:
+                    return
+                self._set_cell(r, ci, val)
+                data.append({"range": f"'{self.tab}'!{col_letter(ci)}{row}", "values": [[val]]})
+
+            put(self.tb_retby_i, initials)
+            put(self.tb_realret_i, f"{date} {initials}")
+            put(self.tb_status_i, "Returned")
+            if data:
+                self.svc.spreadsheets().values().batchUpdate(
+                    spreadsheetId=self.sid,
+                    body={"valueInputOption": "USER_ENTERED", "data": data}).execute()
+            return row
+
+    def tb_register(self):
+        """Compact active-borrow register for the phones: [[uid, code], ...] for every OPEN row —
+        so a phone can flag 'already has a book' the instant a student card is scanned."""
+        with self._lock:
+            if self.tb_uid_i is None:
+                return []
+            out, seen = [], set()
+            for r in range(self.header_i + 1, len(self.values)):
+                if not self._is_open_row(r):
+                    continue
+                uid = normalize(self._cell(r, self.tb_uid_i))
+                if uid in seen:
+                    continue
+                seen.add(uid)
+                code = self._cell(r, self.tb_code_i) if self.tb_code_i is not None else ""
+                out.append([uid, str(code)])
+            return out
 
     def plan_checkin(self, student):
         """Decide the check-in outcome from the loaded sheet WITHOUT the (slow) API write, so
